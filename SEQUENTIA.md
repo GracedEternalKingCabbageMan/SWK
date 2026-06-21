@@ -44,11 +44,29 @@ A runnable end-to-end example (syncs against a live explorer):
 cargo run -p lwk_wollet --example sequentia_sync
 ```
 
+## Web wallet (WASM)
+
+`lwk_wasm` builds the toolkit to WebAssembly, and `lwk_wasm/www/index.html` is a
+self-contained, Sequentia-branded browser wallet on top of it: create/import a
+12-word mnemonic, derive non-confidential, Bitcoin-format receive addresses
+(`tb1…`; confidentiality is opt-in on Sequentia), sync against a Sequentia
+esplora at `<origin>/api`, and show the tSEQ balance — all client-side, keys
+never leaving the browser.
+
+```
+cd lwk_wasm && wasm-pack build --target web --release      # needs clang
+# then serve www/ with the generated pkg/ alongside it
+```
+
+A public instance runs alongside the Sequentia explorer.
+
 ## Status / roadmap
 
 - [x] Sequentia network + address params
 - [x] Vendored rust-elements with the anchored-header `sequentia` serialization
 - [x] End-to-end watch-only sync against a live Sequentia explorer
 - [x] `nDenomination` issuance byte (issuance-tx serialization delta)
+- [x] WASM build + browser wallet (create/import, receive, balance)
+- [ ] Send / PSET signing in the browser wallet
 - [ ] Confidential-tx review for the testnet's non-confidential outputs
 - [ ] Wider SWK branding (crate names stay `lwk_*` for upstream tracking)

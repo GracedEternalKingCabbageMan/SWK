@@ -25,3 +25,6 @@ swaps/
 .codex
 rust-elements/target/
 rust-elements/Cargo.lock
+
+# wasm-pack build output
+lwk_wasm/pkg/

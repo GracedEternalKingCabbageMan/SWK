@@ -16,7 +16,7 @@ impl std::fmt::Display for Network {
         match &self.inner {
             lwk_common::Network::Liquid => write!(f, "Liquid"),
             lwk_common::Network::TestnetLiquid => write!(f, "LiquidTestnet"),
-            lwk_common::Network::CustomElements(_) => write!(f, "{:?}", &self.inner),
+            lwk_common::Network::CustomElements(_) => write!(f, "{}", self.inner.as_str()),
         }
     }
 }
@@ -49,6 +49,12 @@ impl Network {
     /// Creates a testnet `Network``
     pub fn testnet() -> Network {
         lwk_common::Network::TestnetLiquid.into()
+    }
+
+    /// Creates the Sequentia testnet `Network`
+    #[wasm_bindgen(js_name = sequentiaTestnet)]
+    pub fn sequentia_testnet() -> Network {
+        lwk_common::Network::sequentia_testnet().into()
     }
 
     /// Creates a regtest `Network``

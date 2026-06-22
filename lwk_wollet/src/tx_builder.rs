@@ -75,6 +75,23 @@ fn add_external_input(
     )
 }
 
+/// The canonical Sequentia stake script:
+/// `<csv> OP_CHECKSEQUENCEVERIFY OP_DROP <staker_pubkey> OP_CHECKSIG`
+/// (a byte-for-byte mirror of the node's `BuildStakeScript`). Bonding sends the
+/// policy asset to this bare scriptPubKey; spending it (unbonding) requires the
+/// staker key and `csv` relative-timelock maturity.
+#[cfg(feature = "sequentia")]
+pub fn sequentia_stake_script(staker_pubkey: &[u8], csv: u32) -> Script {
+    use elements::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
+    elements::script::Builder::new()
+        .push_int(csv as i64)
+        .push_opcode(OP_CSV) // OP_CHECKSEQUENCEVERIFY (0xb2)
+        .push_opcode(OP_DROP)
+        .push_slice(staker_pubkey)
+        .push_opcode(OP_CHECKSIG)
+        .into_script()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn add_input_inner(
     pset: &mut PartiallySignedTransaction,
@@ -280,6 +297,22 @@ impl TxBuilder {
             asset,
         });
         Ok(self)
+    }
+
+    /// Add a Sequentia staking output (bond): sends `satoshi` of the policy
+    /// asset to the canonical stake script for `staker_pubkey` (33-byte
+    /// compressed secp key) with a `csv` BIP68 relative timelock. Spending it
+    /// (unbonding) requires the staker key and csv maturity.
+    #[cfg(feature = "sequentia")]
+    pub fn add_stake_output(mut self, staker_pubkey: &[u8], csv: u32, satoshi: u64) -> Self {
+        let asset = *self.network().policy_asset();
+        self.recipients.push(Recipient {
+            satoshi,
+            script_pubkey: sequentia_stake_script(staker_pubkey, csv),
+            blinding_pubkey: None,
+            asset,
+        });
+        self
     }
 
     /// Fee rate in sats/kvb

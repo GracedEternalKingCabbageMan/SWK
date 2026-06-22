@@ -7,6 +7,19 @@ use crate::{
     liquidex::ValidatedLiquidexProposal, Address, AssetId, Contract, Error, Network, OutPoint,
     Pset, Transaction, Wollet,
 };
+use lwk_wollet::elements::hex::ToHex;
+use lwk_wollet::hashes::hex::FromHex;
+
+/// Build the canonical Sequentia stake script for a 33-byte hex `staker_pubkey`
+/// and a `csv` relative-timelock; returns the scriptPubKey as hex. Can be
+/// cross-checked byte-for-byte against the node's `getstakescript`.
+#[wasm_bindgen(js_name = sequentiaStakeScript)]
+pub fn sequentia_stake_script(staker_pubkey: &str, csv: u32) -> Result<String, Error> {
+    let pubkey = Vec::<u8>::from_hex(staker_pubkey)?;
+    Ok(lwk_wollet::sequentia_stake_script(&pubkey, csv)
+        .as_bytes()
+        .to_hex())
+}
 
 /// A transaction builder
 #[wasm_bindgen]
@@ -123,6 +136,21 @@ impl TxBuilder {
             .inner
             .add_explicit_recipient(&address.into(), satoshi, (*asset).into())?
             .into())
+    }
+
+    /// Add a Sequentia staking output (bond): sends `satoshi` of the policy
+    /// asset to the canonical stake script for `staker_pubkey` (33-byte hex)
+    /// with a `csv` BIP68 relative-timelock. Spending it (unbonding) requires
+    /// the staker key and csv maturity.
+    #[wasm_bindgen(js_name = addStakeOutput)]
+    pub fn add_stake_output(
+        self,
+        staker_pubkey: &str,
+        csv: u32,
+        satoshi: u64,
+    ) -> Result<TxBuilder, Error> {
+        let pubkey = Vec::<u8>::from_hex(staker_pubkey)?;
+        Ok(self.inner.add_stake_output(&pubkey, csv, satoshi).into())
     }
 
     /// Issue an asset

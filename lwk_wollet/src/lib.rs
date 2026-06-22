@@ -140,6 +140,8 @@ pub use crate::wollet::DirectoryIdHash;
 
 // Re-export store types from lwk_common
 pub use crate::tx_builder::{BuiltTx, TxBuilder, WolletTxBuilder};
+#[cfg(feature = "sequentia")]
+pub use crate::tx_builder::sequentia_stake_script;
 pub use crate::update::{DownloadTxResult, Update};
 pub use crate::util::EC;
 pub use crate::wollet::{Tip, Wollet, WolletBuilder};

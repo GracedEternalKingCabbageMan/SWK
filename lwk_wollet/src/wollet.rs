@@ -682,6 +682,23 @@ impl Wollet {
         Ok(utxos)
     }
 
+    /// True if the wallet holds any confidential (blinded) unspent output.
+    /// On Sequentia, change is kept confidential only when a confidential input
+    /// might be spent (Elements requires a confidential output to balance one);
+    /// otherwise change is explicit, so spends of explicit funds stay fully
+    /// non-confidential, matching Sequentia's default.
+    #[cfg(feature = "sequentia")]
+    pub(crate) fn has_confidential_utxo(&self) -> bool {
+        for (outpoint, _) in self.cache.unspent() {
+            if let Some(secrets) = self.cache.get_unblinded(outpoint) {
+                if !is_explicit(secrets) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn txos_inner(&self) -> Result<Vec<WalletTxOut>, Error> {
         let mut txos = vec![];
         let unspent = self.cache.unspent();

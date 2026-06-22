@@ -62,6 +62,25 @@ impl Signer {
         Ok(self.inner.xpub().into())
     }
 
+    /// Return a dedicated Sequentia staking public key (33-byte compressed hex)
+    /// derived from the master key at m/2/0. The wallet controls the matching
+    /// private key, so a stake bonded to this key can later be unbonded.
+    #[wasm_bindgen(js_name = stakerPublicKey)]
+    pub fn staker_public_key(&self) -> Result<String, Error> {
+        use lwk_wollet::bitcoin::secp256k1::Secp256k1;
+        let secp = Secp256k1::verification_only();
+        let path = bip32::DerivationPath::from(vec![
+            bip32::ChildNumber::Normal { index: 2 },
+            bip32::ChildNumber::Normal { index: 0 },
+        ]);
+        let child = self
+            .inner
+            .xpub()
+            .derive_pub(&secp, &path)
+            .map_err(|e| Error::Generic(e.to_string()))?;
+        Ok(child.public_key.to_string())
+    }
+
     /// Return keyorigin and xpub, like "[73c5da0a/84h/1h/0h]tpub..."
     #[wasm_bindgen(js_name = keyoriginXpub)]
     pub fn keyorigin_xpub(&self, bip: &Bip) -> Result<String, Error> {

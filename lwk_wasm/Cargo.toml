@@ -35,6 +35,7 @@ lwk_wollet = { version = "0.18.0", default-features = false, features = [
     "amp0",
     "prices",
     "registry",
+    "sequentia",
 ] }
 lwk_boltz = { version = "0.18.0", default-features = false }
 lwk_common = "0.18.0"

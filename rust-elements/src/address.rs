@@ -190,6 +190,19 @@ impl AddressParams {
         bech_hrp: Hrp::parse_unchecked("tex"),
         blech_hrp: Hrp::parse_unchecked("tlq"),
     };
+
+    /// The Sequentia testnet network address parameters.
+    ///
+    /// Sequentia reuses Bitcoin testnet's `tb` segwit HRP (unblinded, Bitcoin-format
+    /// by default) and a `tsqb` HRP for confidential (blinded) segwit addresses.
+    #[cfg(feature = "sequentia")]
+    pub const SEQUENTIA_TESTNET: AddressParams = AddressParams {
+        p2pkh_prefix: 111,
+        p2sh_prefix: 196,
+        blinded_prefix: 70,
+        bech_hrp: Hrp::parse_unchecked("tb"),
+        blech_hrp: Hrp::parse_unchecked("tsqb"),
+    };
 }
 
 /// The method used to produce an address
@@ -696,6 +709,20 @@ impl FromStr for Address {
         let net_arr = [liq, ele, liq_test];
 
         let prefix = find_prefix(s);
+
+        // Sequentia testnet addresses use the `tb`/`tsqb` HRPs, which are not in
+        // the built-in Elements networks above. Check them first under the feature.
+        #[cfg(feature = "sequentia")]
+        {
+            let seq = &AddressParams::SEQUENTIA_TESTNET;
+            if match_prefix(prefix, seq.bech_hrp) {
+                return Address::from_bech32(s, false, seq);
+            }
+            if match_prefix(prefix, seq.blech_hrp) {
+                return Address::from_bech32(s, true, seq);
+            }
+        }
+
         for net in net_arr.iter() {
             // Bech32.
             if match_prefix(prefix, net.bech_hrp) {
@@ -716,6 +743,13 @@ impl FromStr for Address {
         }
 
         let p = data[0];
+        #[cfg(feature = "sequentia")]
+        {
+            let seq = &AddressParams::SEQUENTIA_TESTNET;
+            if p == seq.p2pkh_prefix || p == seq.p2sh_prefix || p == seq.blinded_prefix {
+                return Address::from_base58(&data, seq);
+            }
+        }
         for net in net_arr.iter() {
             if p == net.p2pkh_prefix || p == net.p2sh_prefix || p == net.blinded_prefix {
                 return Address::from_base58(&data, net);

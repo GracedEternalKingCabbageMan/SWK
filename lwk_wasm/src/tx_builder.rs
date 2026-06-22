@@ -68,6 +68,13 @@ impl TxBuilder {
         self.inner.fee_rate(fee_rate).into()
     }
 
+    /// Sequentia: pay the transaction fee in a non-policy asset, at the node's
+    /// published exchange rate (atoms-of-asset per reference unit, scaled by 1e8).
+    #[wasm_bindgen(js_name = feeAsset)]
+    pub fn fee_asset(self, asset: &AssetId, rate: u64) -> TxBuilder {
+        self.inner.fee_asset((*asset).into(), rate).into()
+    }
+
     /// Select all available L-BTC inputs
     #[wasm_bindgen(js_name = drainLbtcWallet)]
     pub fn drain_lbtc_wallet(self) -> TxBuilder {

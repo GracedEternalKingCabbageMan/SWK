@@ -642,6 +642,10 @@ impl Wollet {
                 .cache
                 .get_unblinded(outpoint)
                 .ok_or_else(|| Error::Generic("missing unblinded".into()))?;
+            // On Sequentia the default is non-confidential, so explicit (unblinded)
+            // outputs to our scripts are first-class wallet funds. Upstream Liquid
+            // treats them as external-only and skips them here.
+            #[cfg(not(feature = "sequentia"))]
             if is_explicit(&unblinded) {
                 continue;
             }
@@ -1253,16 +1257,20 @@ fn tx_balance(
     debug_assert_eq!(txid, tx.txid());
     let mut balance = BTreeMap::new();
 
+    // On Sequentia, explicit (non-confidential) amounts are normal wallet funds
+    // and must be reflected in per-tx balance deltas; upstream counts only blinded.
+    let counts = |s: &TxOutSecrets| cfg!(feature = "sequentia") || !is_explicit(s);
+
     for out_idx in 0..tx.output.len() {
         if let Some(txout) = txos.get(&OutPoint::new(txid, out_idx as u32)) {
-            if !is_explicit(&txout.unblinded) {
+            if counts(&txout.unblinded) {
                 *balance.entry(txout.unblinded.asset).or_default() += txout.unblinded.value as i64;
             }
         }
     }
     for input in &tx.input {
         if let Some(txout) = txos.get(&input.previous_output) {
-            if !is_explicit(&txout.unblinded) {
+            if counts(&txout.unblinded) {
                 *balance.entry(txout.unblinded.asset).or_default() -= txout.unblinded.value as i64;
             }
         }

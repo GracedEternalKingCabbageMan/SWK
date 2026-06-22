@@ -79,7 +79,8 @@ impl Wollet {
             tx,
             utxo.unblinded,
             self.max_weight_to_satisfy(),
-            false, // wallet inputs cannot be explicit
+            // Sequentia: wallet inputs may be explicit (non-confidential default).
+            cfg!(feature = "sequentia"),
             add_input_rangeproofs,
         )
     }

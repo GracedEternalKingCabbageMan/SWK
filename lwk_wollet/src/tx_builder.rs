@@ -197,6 +197,11 @@ pub struct TxBuilder {
 
     add_input_rangeproofs: bool,
 
+    /// Sequentia: pay the tx fee in this non-policy asset, at the node's published
+    /// rate (atoms-of-asset per reference unit, scaled by 1e8). None = fee in policy.
+    #[cfg(feature = "sequentia")]
+    fee_asset: Option<(AssetId, u64)>,
+
     // LiquiDEX fields
     is_liquidex_make: bool,
     liquidex_proposals: Vec<LiquidexProposal<Validated>>,
@@ -216,6 +221,8 @@ impl TxBuilder {
             external_utxos: vec![],
             selected_utxos: None,
             add_input_rangeproofs: true,
+            #[cfg(feature = "sequentia")]
+            fee_asset: None,
             is_liquidex_make: false,
             liquidex_proposals: vec![],
         }
@@ -321,6 +328,17 @@ impl TxBuilder {
         if let Some(fee_rate) = fee_rate {
             self.fee_rate = fee_rate
         }
+        self
+    }
+
+    /// Sequentia: pay the transaction fee in `asset` (a non-policy asset) instead of
+    /// the policy asset. `rate` is the node's published exchange rate for that asset
+    /// (atoms-of-asset per reference unit, scaled by 1e8) — the same rate the consensus
+    /// uses, so the built fee matches what the node requires. The wallet must hold
+    /// enough of `asset` to cover the converted fee.
+    #[cfg(feature = "sequentia")]
+    pub fn fee_asset(mut self, asset: AssetId, rate: u64) -> Self {
+        self.fee_asset = Some((asset, rate));
         self
     }
 
@@ -948,6 +966,26 @@ impl TxBuilder {
         // Policy asset is handled separately below
         assets.remove(&policy_asset);
 
+        // Sequentia: when the fee is paid in a non-policy asset, make sure that asset is
+        // coin-selected even if it isn't otherwise being sent. Its change + the fee output
+        // are deferred to the fee-finalization step (the fee isn't known until weighed).
+        #[cfg(feature = "sequentia")]
+        let fee_in_asset = self.fee_asset.filter(|(fa, _)| *fa != policy_asset);
+        #[cfg(not(feature = "sequentia"))]
+        let fee_in_asset: Option<(AssetId, u64)> = None;
+        if let Some((fa, rate)) = fee_in_asset {
+            // A zero rate means the node won't accept this asset for fees; guard before
+            // it reaches the division below (which would otherwise divide by zero).
+            if rate == 0 {
+                return Err(Error::Generic(format!(
+                    "fee asset {fa} has a zero exchange rate (not accepted for fees)"
+                )));
+            }
+            assets.insert(fa);
+        }
+        let mut fee_asset_in: u64 = 0;
+        let mut fee_asset_out: u64 = 0;
+
         for asset in assets {
             let mut satoshi_out = 0;
             let mut satoshi_in = 0;
@@ -987,8 +1025,10 @@ impl TxBuilder {
                     satoshi_in += utxo.unblinded.value;
                 }
             } else {
-                // Add more asset utxos until we cover the amount to send
-                if satoshi_in < satoshi_out {
+                // Add more asset utxos until we cover the amount to send. For the fee
+                // asset, select ALL of it so there's room for the (not-yet-known) fee.
+                let want_all = fee_in_asset.map_or(false, |(fa, _)| fa == asset);
+                if satoshi_in < satoshi_out || want_all {
                     for utxo in utxos.values().filter(|u| u.unblinded.asset == asset) {
                         wollet.add_input(
                             &mut pset,
@@ -998,11 +1038,19 @@ impl TxBuilder {
                             self.add_input_rangeproofs,
                         )?;
                         satoshi_in += utxo.unblinded.value;
-                        if satoshi_in >= satoshi_out {
+                        if !want_all && satoshi_in >= satoshi_out {
                             break;
                         }
                     }
                 }
+            }
+
+            // Sequentia: defer the fee asset's change + insufficiency check to the fee
+            // step below (we don't yet know the fee); just record what we hold and spend.
+            if fee_in_asset.map_or(false, |(fa, _)| fa == asset) {
+                fee_asset_in = satoshi_in;
+                fee_asset_out = satoshi_out;
+                continue;
             }
 
             // Add change
@@ -1188,32 +1236,74 @@ impl TxBuilder {
         // Add a temporary fee, and always add a change or drain output,
         // then we'll tweak those values to match the given fee rate.
         let temp_fee = 1;
-        if satoshi_in <= (satoshi_out + temp_fee) {
+        let policy_asset_id = wollet.policy_asset();
+        // The policy asset only absorbs the fee when the fee is paid in it. With a
+        // non-policy fee asset, the policy side just returns its full residual and the
+        // fee comes out of the fee asset's deferred change (handled after weighing).
+        let policy_fee = if fee_in_asset.is_some() { 0 } else { temp_fee };
+        if satoshi_in < satoshi_out + policy_fee
+            || (fee_in_asset.is_none() && satoshi_in == satoshi_out + policy_fee)
+        {
             return Err(Error::InsufficientFunds {
-                missing_sats: (satoshi_out + temp_fee + 1) - satoshi_in, // +1 to ensure we have more than just equal
-                asset_id: wollet.policy_asset(),
+                missing_sats: (satoshi_out + policy_fee + 1).saturating_sub(satoshi_in),
+                asset_id: policy_asset_id,
                 is_token: false,
             });
         }
-        let satoshi_change = satoshi_in - satoshi_out - temp_fee;
-        let addressee = if let Some(address) = self.drain_to {
-            Recipient::from_address(satoshi_change, &address, wollet.policy_asset())
+        let policy_change = satoshi_in - satoshi_out - policy_fee;
+        // Add the policy change/drain output (skip a pointless zero-value one when the
+        // fee is in another asset and there is no policy residual).
+        let mut policy_change_idx: Option<usize> = None;
+        if policy_change > 0 || fee_in_asset.is_none() {
+            let addressee = if let Some(address) = self.drain_to.clone() {
+                Recipient::from_address(policy_change, &address, policy_asset_id)
+            } else {
+                wollet.addressee_change(policy_change, policy_asset_id, &mut last_unused_internal)?
+            };
+            wollet.add_output(&mut pset, &addressee)?;
+            policy_change_idx = Some(pset.n_outputs() - 1);
+        }
+        // Fee-asset change (deferred from the per-asset loop), then the fee output. The
+        // fee output's asset is what the consensus reads as the tx's fee asset.
+        let mut fee_change_idx: Option<usize> = None;
+        let fee_output_asset = if let Some((fa, _)) = fee_in_asset {
+            // The fee asset's per-asset insufficiency check was deferred (the loop
+            // `continue`d), so guard the subtraction: sending more than is held would
+            // otherwise underflow. (The fee itself is checked after weighing, below.)
+            let x_change_temp = fee_asset_in.checked_sub(fee_asset_out).ok_or_else(|| {
+                Error::InsufficientFunds {
+                    missing_sats: fee_asset_out - fee_asset_in, // only reached when out > in
+                    asset_id: fa,
+                    is_token: false,
+                }
+            })?;
+            if x_change_temp > 0 {
+                let addressee =
+                    wollet.addressee_change(x_change_temp, fa, &mut last_unused_internal)?;
+                wollet.add_output(&mut pset, &addressee)?;
+                fee_change_idx = Some(pset.n_outputs() - 1);
+            }
+            fa
         } else {
-            wollet.addressee_change(
-                satoshi_change,
-                wollet.policy_asset(),
-                &mut last_unused_internal,
-            )?
+            policy_asset_id
         };
-        wollet.add_output(&mut pset, &addressee)?;
         let fee_output =
-            Output::new_explicit(Script::default(), temp_fee, wollet.policy_asset(), None);
+            Output::new_explicit(Script::default(), temp_fee, fee_output_asset, None);
         pset.add_output(fee_output);
+        let fee_output_idx = pset.n_outputs() - 1;
 
         let weight = {
             let mut rng = thread_rng();
             let mut temp_pset = pset.clone();
-            temp_pset.blind_last(&mut rng, &EC, &inp_txout_sec)?;
+            // Sequentia: a fully-explicit tx (no confidential outputs) has nothing to
+            // blind — calling blind_last would error with AtleastOneOutputBlind.
+            #[cfg(feature = "sequentia")]
+            let do_blind = temp_pset.outputs().iter().any(|o| o.blinding_key.is_some());
+            #[cfg(not(feature = "sequentia"))]
+            let do_blind = true;
+            if do_blind {
+                temp_pset.blind_last(&mut rng, &EC, &inp_txout_sec)?;
+            }
             let tx_weight = {
                 let tx = temp_pset.extract_tx()?;
                 if self.ct_discount {
@@ -1226,21 +1316,63 @@ impl TxBuilder {
         };
 
         let fee = calculate_fee(weight, self.fee_rate);
-        if satoshi_in <= (satoshi_out + fee) {
-            return Err(Error::InsufficientFunds {
-                missing_sats: (satoshi_out + fee + 1) - satoshi_in, // +1 to ensure we have more than just equal
-                asset_id: wollet.policy_asset(),
-                is_token: false,
-            });
+        if let Some((fa, rate)) = fee_in_asset {
+            // Convert the policy-denominated fee into the fee asset, mirroring the
+            // consensus' ConvertValueToAmount: ceil(fee * 1e8 / rate). +1 atom of margin
+            // covers the floor the node applies when valuing the fee back.
+            let scale: u128 = 100_000_000;
+            let rate128 = rate as u128; // rate > 0 guaranteed above
+            let q = (fee as u128 * scale + rate128 - 1) / rate128;
+            if q >= u64::MAX as u128 {
+                return Err(Error::Generic(format!(
+                    "fee in asset {fa} overflows u64 (exchange rate too small)"
+                )));
+            }
+            let mut fee_amount_x = q as u64 + 1;
+            if fee_asset_in < fee_asset_out + fee_amount_x {
+                return Err(Error::InsufficientFunds {
+                    missing_sats: (fee_asset_out + fee_amount_x) - fee_asset_in,
+                    asset_id: fa,
+                    is_token: false,
+                });
+            }
+            let x_change = fee_asset_in - fee_asset_out - fee_amount_x;
+            // The policy side returns its full residual; the fee comes from the fee asset.
+            if let Some(i) = policy_change_idx {
+                pset.outputs_mut()[i].amount = Some(satoshi_in - satoshi_out);
+            }
+            // The fee-asset change carries the fee asset, so the node dust-checks it
+            // (policy.cpp). At/below the dust threshold (including 0) it would be rejected,
+            // so fold the residual into the fee and drop the change output instead.
+            let dust = (294u128 * scale + rate128 - 1) / rate128; // = ConvertValueToAmount(294, fa)
+            match fee_change_idx {
+                Some(ci) if (x_change as u128) > dust => {
+                    pset.outputs_mut()[ci].amount = Some(x_change);
+                    pset.outputs_mut()[fee_output_idx].amount = Some(fee_amount_x);
+                }
+                Some(ci) => {
+                    fee_amount_x += x_change; // fold dust residual into the fee
+                    pset.outputs_mut()[fee_output_idx].amount = Some(fee_amount_x);
+                    pset.remove_output(ci); // drop the would-be-dust change output
+                }
+                None => {
+                    pset.outputs_mut()[fee_output_idx].amount = Some(fee_amount_x);
+                }
+            }
+        } else {
+            if satoshi_in <= (satoshi_out + fee) {
+                return Err(Error::InsufficientFunds {
+                    missing_sats: (satoshi_out + fee + 1) - satoshi_in, // +1 to ensure we have more than just equal
+                    asset_id: policy_asset_id,
+                    is_token: false,
+                });
+            }
+            let outputs = pset.outputs_mut();
+            if let Some(i) = policy_change_idx {
+                outputs[i].amount = Some(satoshi_in - satoshi_out - fee);
+            }
+            outputs[fee_output_idx].amount = Some(fee);
         }
-        let satoshi_change = satoshi_in - satoshi_out - fee;
-        // Replace change and fee outputs
-        let n_outputs = pset.n_outputs();
-        let outputs = pset.outputs_mut();
-        let change_output = &mut outputs[n_outputs - 2]; // index check: we always have the lbtc change and the fee output at least
-        change_output.amount = Some(satoshi_change);
-        let fee_output = &mut outputs[n_outputs - 1];
-        fee_output.amount = Some(fee);
 
         // TODO inputs/outputs(except fee) randomization, not trivial because of blinder_index on inputs
 
@@ -1269,9 +1401,18 @@ impl TxBuilder {
                 (*i, s)
             })
             .collect();
-        let blind_secrets = pset26
-            .blind_last(&mut rng, &EC, &inp_txout_sec)
-            .map_err(|e| Error::Generic(format!("elements26 blind error: {e}")))?;
+        // Sequentia: skip blinding (and emit no blinding secrets) for a fully-explicit tx.
+        #[cfg(feature = "sequentia")]
+        let do_blind = pset26.outputs().iter().any(|o| o.blinding_key.is_some());
+        #[cfg(not(feature = "sequentia"))]
+        let do_blind = true;
+        let blind_secrets = if do_blind {
+            pset26
+                .blind_last(&mut rng, &EC, &inp_txout_sec)
+                .map_err(|e| Error::Generic(format!("elements26 blind error: {e}")))?
+        } else {
+            BTreeMap::new()
+        };
         // erase all non witness utxo surjection and range proofs
         // this appears to be necessary for pre-segwit inputs
         for input in pset26.inputs_mut() {

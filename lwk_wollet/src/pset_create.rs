@@ -186,7 +186,20 @@ impl Wollet {
             self.address(index)?
         };
         *last_unused += 1;
-        Ok(Recipient::from_address(satoshi, address.address(), asset))
+        let addr = address.address();
+        // Sequentia: make change explicit (non-confidential) unless the wallet
+        // might spend a confidential input (Elements requires a confidential
+        // output to balance one). This makes spends of explicit funds fully
+        // non-confidential, matching Sequentia's default.
+        #[cfg(feature = "sequentia")]
+        if is_change && !self.has_confidential_utxo() {
+            return Ok(Recipient::from_address(
+                satoshi,
+                &addr.to_unconfidential(),
+                asset,
+            ));
+        }
+        Ok(Recipient::from_address(satoshi, addr, asset))
     }
 
     pub(crate) fn addressee_change(

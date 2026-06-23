@@ -1,6 +1,6 @@
 use crate::blockdata::asset_id::AssetIds;
 use crate::{
-    AddressResult, AssetId, Balance, Error, Network, Pset, PsetDetails, Transaction, TxBuilder,
+    AddressResult, Balance, Error, Network, Pset, PsetDetails, Transaction, TxBuilder,
     Txid, Update, WalletTx, WalletTxOut, WolletDescriptor,
 };
 use lwk_jade::derivation_path_to_vec;
@@ -163,29 +163,42 @@ impl Wollet {
         Ok(self.inner.txos()?.into_iter().map(Into::into).collect())
     }
 
-    /// Sequentia: build an opt-in-RBF replacement for an unconfirmed transaction. Re-pins the
-    /// original wallet inputs and re-adds the recipients; chain a higher `feeRate` and, to pay
-    /// the bump in a non-policy asset, `feeAsset(asset, rate)` (any accepted asset — no asset is
-    /// privileged), then `finish(wollet)`.
+    /// Sequentia: build an opt-in-RBF *fee bump* for an unconfirmed transaction — re-pins the
+    /// original wallet inputs and re-adds the *same* recipients (the same payment, higher fee).
+    /// Chain a higher `feeRate` and, to pay the bump in a non-policy asset, `feeAsset(asset, rate)`
+    /// (any accepted asset — no asset is privileged), then `finish(wollet)`.
     #[wasm_bindgen(js_name = bumpFeeOf)]
     pub fn bump_fee_of(&self, txid: &Txid) -> Result<TxBuilder, Error> {
         Ok(self.inner.bump_fee_of(txid.into())?.into())
     }
 
-    /// Sequentia: build a child-pays-for-parent rescue spending an unconfirmed transaction's
-    /// change output; chain a high `feeRate` and, when the change is a non-policy asset,
-    /// `feeAsset(changeAsset, rate)`, then `finish(wollet)`.
+    /// Sequentia: build an opt-in-RBF *replace* of an unconfirmed transaction — re-pins the original
+    /// inputs (so it conflicts per BIP125) but leaves the recipients empty for the caller to set
+    /// anew (a different address, asset, or amount). Add new recipients, a higher `feeRate`,
+    /// optionally `feeAsset(asset, rate)`, then `finish(wollet)`. Use to *correct* a payment;
+    /// `bumpFeeOf` merely outbids the same one.
+    #[wasm_bindgen(js_name = replaceTxOf)]
+    pub fn replace_tx_of(&self, txid: &Txid) -> Result<TxBuilder, Error> {
+        Ok(self.inner.replace_tx_of(txid.into())?.into())
+    }
+
+    /// Sequentia: build a child-pays-for-parent rescue for a parent stuck on too low a fee. Pins an
+    /// unconfirmed wallet output of the parent (the link) but keeps coin selection on, so you fund a
+    /// high fee in any *producer-accepted* asset (default the policy asset) — not the pinned
+    /// output's asset. Chain `feeRate` (see `cpfpSuggestedFeerate`) and, for a non-policy fee asset,
+    /// `feeAsset(asset, rate)`, then `finish(wollet)`. CPFP cannot rescue a wrong-fee-asset
+    /// stranding (use `replaceTxOf`).
     #[wasm_bindgen(js_name = cpfpOf)]
     pub fn cpfp_of(&self, txid: &Txid) -> Result<TxBuilder, Error> {
         Ok(self.inner.cpfp_of(txid.into())?.into())
     }
 
-    /// Sequentia: the asset a CPFP child's fee must be paid in — the asset of the change output
-    /// `cpfpOf` pins. Read this and pass it to `feeAsset` (or omit it when it equals the policy
-    /// asset) so the declared fee asset always matches the only input the child can spend.
-    #[wasm_bindgen(js_name = cpfpFeeAsset)]
-    pub fn cpfp_fee_asset(&self, txid: &Txid) -> Result<AssetId, Error> {
-        Ok(self.inner.cpfp_fee_asset(txid.into())?.into())
+    /// Sequentia: a conservative child `feeRate` (sat/kvb) that lifts the {parent, child} package to
+    /// `targetFeerate` (sat/kvb), sized from the parent's vsize. Pass to `feeRate` on the `cpfpOf`
+    /// builder.
+    #[wasm_bindgen(js_name = cpfpSuggestedFeerate)]
+    pub fn cpfp_suggested_feerate(&self, txid: &Txid, target_feerate: f32) -> Result<f32, Error> {
+        Ok(self.inner.cpfp_suggested_feerate(txid.into(), target_feerate)?)
     }
 
     /// Finalize and consume the given PSET, returning the finalized one

@@ -202,6 +202,12 @@ pub struct TxBuilder {
     #[cfg(feature = "sequentia")]
     fee_asset: Option<(AssetId, u64)>,
 
+    /// Sequentia: signal opt-in RBF (BIP125) on every input so a stuck transaction
+    /// can later be replaced — to bump the fee, or to rescue an any-asset-fee tx by
+    /// re-paying the fee in the policy asset. Defaults to true. See [`TxBuilder::enable_rbf`].
+    #[cfg(feature = "sequentia")]
+    enable_rbf: bool,
+
     // LiquiDEX fields
     is_liquidex_make: bool,
     liquidex_proposals: Vec<LiquidexProposal<Validated>>,
@@ -223,6 +229,8 @@ impl TxBuilder {
             add_input_rangeproofs: true,
             #[cfg(feature = "sequentia")]
             fee_asset: None,
+            #[cfg(feature = "sequentia")]
+            enable_rbf: true,
             is_liquidex_make: false,
             liquidex_proposals: vec![],
         }
@@ -339,6 +347,17 @@ impl TxBuilder {
     #[cfg(feature = "sequentia")]
     pub fn fee_asset(mut self, asset: AssetId, rate: u64) -> Self {
         self.fee_asset = Some((asset, rate));
+        self
+    }
+
+    /// Sequentia: enable or disable opt-in RBF (BIP125) signalling on the built
+    /// transaction's inputs. When enabled (the default) every input is given sequence
+    /// `0xFFFFFFFD`, so the transaction can later be fee-bumped or rescued (for an
+    /// any-asset-fee tx, by re-paying the fee in the policy asset). Disable to produce
+    /// a final, non-replaceable transaction.
+    #[cfg(feature = "sequentia")]
+    pub fn enable_rbf(mut self, enabled: bool) -> Self {
+        self.enable_rbf = enabled;
         self
     }
 
@@ -1359,6 +1378,14 @@ impl TxBuilder {
                     pset.outputs_mut()[fee_output_idx].amount = Some(fee_amount_x);
                 }
             }
+            // Guard against a value-less transaction — e.g. a CPFP child whose change is entirely
+            // consumed by the fee (the dust-fold above can drop the only value output). Refuse
+            // rather than silently burning the rescued amount to fee.
+            if !pset.outputs().iter().any(|o| !o.script_pubkey.is_empty()) {
+                return Err(Error::Generic(
+                    "change too small to rescue at this fee rate — it would all go to fee; use Bump fee (RBF) instead".into(),
+                ));
+            }
         } else {
             if satoshi_in <= (satoshi_out + fee) {
                 return Err(Error::InsufficientFunds {
@@ -1431,6 +1458,15 @@ impl TxBuilder {
 
         // Add details to the pset from our descriptor, like bip32derivation and keyorigin
         wollet.add_details(&mut built_tx.pset)?;
+
+        // Sequentia: signal opt-in RBF (BIP125) so the tx can be fee-bumped or rescued
+        // later (e.g. switching an unpriced fee asset back to the policy asset).
+        #[cfg(feature = "sequentia")]
+        if self.enable_rbf {
+            for input in built_tx.pset.inputs_mut() {
+                input.sequence = Some(elements::Sequence::ENABLE_RBF_NO_LOCKTIME);
+            }
+        }
 
         Ok(built_tx)
     }

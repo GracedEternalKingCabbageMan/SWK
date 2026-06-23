@@ -817,6 +817,121 @@ impl Wollet {
         Ok(utxos)
     }
 
+    /// Sequentia: package a wallet-owned outpoint — possibly already spent by an unconfirmed
+    /// transaction, so absent from the unspent set — as an [`ExternalUtxo`], so it can be
+    /// re-spent via [`crate::TxBuilder::add_external_utxos()`]. This is the basis of the RBF
+    /// fee-bump and CPFP rescues: it resolves from the cache (which retains spent outputs'
+    /// secrets and parent tx), not from the unspent set.
+    #[cfg(feature = "sequentia")]
+    fn external_utxo_for(&self, outpoint: OutPoint) -> Result<ExternalUtxo, Error> {
+        let unblinded = *self
+            .cache
+            .get_unblinded(&outpoint)
+            .ok_or(Error::MissingWalletUtxo(outpoint))?;
+        let tx = self
+            .cache
+            .tx(&outpoint.txid)
+            .ok_or(Error::MissingTransaction)?;
+        let txout = tx
+            .output
+            .get(outpoint.vout as usize)
+            .ok_or_else(|| Error::Generic("missing output".into()))?
+            .clone();
+        let tx_ = if self.is_segwit() { None } else { Some(tx.clone()) };
+        Ok(ExternalUtxo {
+            outpoint,
+            txout,
+            tx: tx_,
+            unblinded,
+            max_weight_to_satisfy: self.max_weight_to_satisfy,
+        })
+    }
+
+    /// Sequentia: build an opt-in-RBF replacement for an unconfirmed transaction. Re-pins the
+    /// original wallet inputs (so the replacement conflicts with the original per BIP125) and
+    /// re-adds the genuine recipients, dropping the old fee output and our own change. The caller
+    /// chains a higher `.fee_rate(...)` and, to pay the bump in a non-policy asset,
+    /// `.fee_asset(asset, rate)` — *any* accepted asset; no asset is privileged — then
+    /// `.finish(wollet)`. The new fee is funded by normal coin selection (the original inputs are
+    /// force-included as external utxos, which does not disable auto-selection).
+    #[cfg(feature = "sequentia")]
+    pub fn bump_fee_of(&self, txid: Txid) -> Result<crate::TxBuilder, Error> {
+        let wtx = self.transaction(&txid)?.ok_or(Error::MissingTransaction)?;
+        let mut externals = vec![];
+        for txin in &wtx.tx.input {
+            let op = txin.previous_output;
+            if self.cache.get_unblinded(&op).is_some() {
+                externals.push(self.external_utxo_for(op)?);
+            }
+        }
+        if externals.is_empty() {
+            return Err(Error::Generic(
+                "cannot fee-bump: none of the transaction's inputs belong to this wallet".into(),
+            ));
+        }
+        let mut b = crate::TxBuilder::new(self.network()).add_external_utxos(externals)?;
+        for (i, txout) in wtx.tx.output.iter().enumerate() {
+            if txout.script_pubkey.is_empty() {
+                continue; // the explicit fee output
+            }
+            if matches!(wtx.outputs.get(i), Some(Some(o)) if o.ext_int == Chain::Internal) {
+                continue; // our own change — the builder regenerates it
+            }
+            let satoshi = txout.value.explicit().ok_or_else(|| {
+                Error::Generic("cannot fee-bump a confidential recipient output".into())
+            })?;
+            let asset = txout.asset.explicit().ok_or_else(|| {
+                Error::Generic("cannot fee-bump a confidential-asset recipient".into())
+            })?;
+            b = b.add_validated_recipient(crate::model::Recipient {
+                satoshi,
+                script_pubkey: txout.script_pubkey.clone(),
+                blinding_pubkey: None,
+                asset,
+            });
+        }
+        Ok(b)
+    }
+
+    /// Sequentia: the parent's first (vout-order) unconfirmed change output — the outpoint a
+    /// CPFP child pins and the asset its fee must be paid in. Both [`Wollet::cpfp_of`] and
+    /// [`Wollet::cpfp_fee_asset`] derive from this single source, so the pinned input and the
+    /// declared fee asset can never disagree (a multi-change parent would otherwise diverge).
+    #[cfg(feature = "sequentia")]
+    fn cpfp_change(&self, txid: Txid) -> Result<(OutPoint, AssetId), Error> {
+        let wtx = self.transaction(&txid)?.ok_or(Error::MissingTransaction)?;
+        let change = wtx
+            .outputs
+            .iter()
+            .flatten()
+            .find(|o| o.ext_int == Chain::Internal && o.height.is_none())
+            .ok_or_else(|| {
+                Error::Generic("no unconfirmed change output to attach a CPFP child to".into())
+            })?;
+        Ok((change.outpoint, change.unblinded.asset))
+    }
+
+    /// Sequentia: build a child-pays-for-parent rescue that spends an unconfirmed transaction's
+    /// change output back to the wallet, so a high child fee lifts the package's fee rate. The
+    /// caller chains a high `.fee_rate(...)` and, when the change is a non-policy asset,
+    /// `.fee_asset(change_asset, rate)` where `change_asset` is [`Wollet::cpfp_fee_asset`] (the
+    /// fee is paid in the change's own asset), then `.finish(wollet)`. CPFP only helps a parent
+    /// producers will already relay; it cannot rescue one stranded because producers reject its
+    /// fee asset.
+    #[cfg(feature = "sequentia")]
+    pub fn cpfp_of(&self, txid: Txid) -> Result<crate::TxBuilder, Error> {
+        let (outpoint, _asset) = self.cpfp_change(txid)?;
+        Ok(crate::TxBuilder::new(self.network()).set_wallet_utxos(vec![outpoint]))
+    }
+
+    /// Sequentia: the asset a CPFP child's fee must be paid in — the asset of the very change
+    /// output [`Wollet::cpfp_of`] pins. The caller passes this to `.fee_asset(...)` (or omits it
+    /// when it is the policy asset) so the fee asset always matches the only available input.
+    #[cfg(feature = "sequentia")]
+    pub fn cpfp_fee_asset(&self, txid: Txid) -> Result<AssetId, Error> {
+        Ok(self.cpfp_change(txid)?.1)
+    }
+
     /// Extract the wallet UTXOs that a PSET is creating
     ///
     /// This function returns [`crate::model::ExternalUtxo`]s so it possible to spend them (using

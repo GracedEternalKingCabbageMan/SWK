@@ -208,6 +208,13 @@ pub struct TxBuilder {
     #[cfg(feature = "sequentia")]
     enable_rbf: bool,
 
+    /// Sequentia: wallet outpoints to keep OUT of automatic coin selection. Used by the RBF
+    /// bump/replace builders to exclude the replaced transaction's own outputs — spending one would
+    /// make the replacement a descendant of the tx it replaces (BIP125 Rule 2: "replacement-adds /
+    /// spends-conflicting-tx") and the node would reject it.
+    #[cfg(feature = "sequentia")]
+    avoid_utxos: Vec<OutPoint>,
+
     // LiquiDEX fields
     is_liquidex_make: bool,
     liquidex_proposals: Vec<LiquidexProposal<Validated>>,
@@ -231,6 +238,8 @@ impl TxBuilder {
             fee_asset: None,
             #[cfg(feature = "sequentia")]
             enable_rbf: true,
+            #[cfg(feature = "sequentia")]
+            avoid_utxos: vec![],
             is_liquidex_make: false,
             liquidex_proposals: vec![],
         }
@@ -347,6 +356,16 @@ impl TxBuilder {
     #[cfg(feature = "sequentia")]
     pub fn fee_asset(mut self, asset: AssetId, rate: u64) -> Self {
         self.fee_asset = Some((asset, rate));
+        self
+    }
+
+    /// Sequentia: keep these wallet outpoints out of automatic coin selection. The RBF bump/replace
+    /// builders pass the replaced transaction's own outputs, so the replacement can't end up spending
+    /// one of them — which would make it a descendant of the tx it replaces and be rejected under
+    /// BIP125 Rule 2.
+    #[cfg(feature = "sequentia")]
+    pub fn avoid_utxos(mut self, outpoints: Vec<OutPoint>) -> Self {
+        self.avoid_utxos = outpoints;
         self
     }
 
@@ -955,7 +974,20 @@ impl TxBuilder {
 
         let mut inp_weight = 0;
 
-        let utxos = wollet.utxos_map()?;
+        let mut utxos = wollet.utxos_map()?;
+        // An explicitly-added external utxo may also be one of the wallet's own utxos — e.g. a CPFP
+        // child pinning the parent's unconfirmed change (Wollet::cpfp_of). Drop those outpoints from
+        // the auto-selection candidates so they aren't spent a second time (bad-txns-inputs-duplicate).
+        for ext in &self.external_utxos {
+            utxos.remove(&ext.outpoint);
+        }
+        // And any outpoints the caller asked to avoid — the RBF bump/replace builders list the
+        // replaced tx's own outputs here, so the replacement can't spend one and become a descendant
+        // of the tx it replaces (BIP125 Rule 2 → bad-txns-spends-conflicting-tx).
+        #[cfg(feature = "sequentia")]
+        for op in &self.avoid_utxos {
+            utxos.remove(op);
+        }
 
         let policy_asset = *self.network().policy_asset();
         let (addressees_lbtc, addressees_asset): (Vec<_>, Vec<_>) = self

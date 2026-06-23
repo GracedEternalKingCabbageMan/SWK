@@ -847,15 +847,16 @@ impl Wollet {
         })
     }
 
-    /// Sequentia: build an opt-in-RBF replacement for an unconfirmed transaction. Re-pins the
-    /// original wallet inputs (so the replacement conflicts with the original per BIP125) and
-    /// re-adds the genuine recipients, dropping the old fee output and our own change. The caller
-    /// chains a higher `.fee_rate(...)` and, to pay the bump in a non-policy asset,
-    /// `.fee_asset(asset, rate)` — *any* accepted asset; no asset is privileged — then
-    /// `.finish(wollet)`. The new fee is funded by normal coin selection (the original inputs are
-    /// force-included as external utxos, which does not disable auto-selection).
+    /// Sequentia: re-pin an unconfirmed transaction's wallet inputs as external utxos, so any
+    /// replacement that spends them conflicts with the original per BIP125 — the shared basis of
+    /// both the "bump fee" and "replace" RBF flows. Auto-selection stays enabled (force-including
+    /// inputs does not disable it), so the caller can fund a higher fee, in any accepted asset, by
+    /// pulling in further wallet utxos.
     #[cfg(feature = "sequentia")]
-    pub fn bump_fee_of(&self, txid: Txid) -> Result<crate::TxBuilder, Error> {
+    fn repin_wallet_inputs(
+        &self,
+        txid: Txid,
+    ) -> Result<(crate::TxBuilder, crate::WalletTx), Error> {
         let wtx = self.transaction(&txid)?.ok_or(Error::MissingTransaction)?;
         let mut externals = vec![];
         for txin in &wtx.tx.input {
@@ -866,10 +867,43 @@ impl Wollet {
         }
         if externals.is_empty() {
             return Err(Error::Generic(
-                "cannot fee-bump: none of the transaction's inputs belong to this wallet".into(),
+                "cannot replace: none of the transaction's inputs belong to this wallet".into(),
             ));
         }
-        let mut b = crate::TxBuilder::new(self.network()).add_external_utxos(externals)?;
+        // The replacement must not spend any of the ORIGINAL's outputs (our own recipient/change
+        // are wallet utxos once the original is in the mempool): doing so would make the replacement
+        // a descendant of the tx it replaces, which the node rejects under BIP125 Rule 2
+        // (bad-txns-spends-conflicting-tx). Keep them out of coin selection.
+        let avoid: Vec<OutPoint> = (0..wtx.tx.output.len() as u32)
+            .map(|vout| OutPoint::new(txid, vout))
+            .collect();
+        let b = crate::TxBuilder::new(self.network())
+            .add_external_utxos(externals)?
+            .avoid_utxos(avoid);
+        Ok((b, wtx))
+    }
+
+    /// Sequentia: build an opt-in-RBF *replace* of an unconfirmed transaction — re-pins the original
+    /// wallet inputs (so it conflicts with the original per BIP125) but does NOT recreate the
+    /// recipients. The caller adds entirely new recipients (a different address, asset, or amount),
+    /// a higher `.fee_rate(...)`, optionally `.fee_asset(asset, rate)`, then `.finish(wollet)`. Use
+    /// this to correct a still-unconfirmed payment; use [`Wollet::bump_fee_of`] to merely outbid the
+    /// *same* payment. (The replacement must still pay a higher absolute fee and meet the node's
+    /// incremental-relay floor, which the node enforces on broadcast.)
+    #[cfg(feature = "sequentia")]
+    pub fn replace_tx_of(&self, txid: Txid) -> Result<crate::TxBuilder, Error> {
+        Ok(self.repin_wallet_inputs(txid)?.0)
+    }
+
+    /// Sequentia: build an opt-in-RBF *fee bump* for an unconfirmed transaction — re-pins the
+    /// original inputs and re-adds the genuine recipients, dropping the old fee output and our own
+    /// change, so the same payment goes through at a higher fee. The caller chains a higher
+    /// `.fee_rate(...)` and, to pay the bump in a non-policy asset, `.fee_asset(asset, rate)` —
+    /// *any* accepted asset; no asset is privileged — then `.finish(wollet)`. (This is
+    /// [`Wollet::replace_tx_of`] with the original recipients re-added.)
+    #[cfg(feature = "sequentia")]
+    pub fn bump_fee_of(&self, txid: Txid) -> Result<crate::TxBuilder, Error> {
+        let (mut b, wtx) = self.repin_wallet_inputs(txid)?;
         for (i, txout) in wtx.tx.output.iter().enumerate() {
             if txout.script_pubkey.is_empty() {
                 continue; // the explicit fee output
@@ -893,43 +927,56 @@ impl Wollet {
         Ok(b)
     }
 
-    /// Sequentia: the parent's first (vout-order) unconfirmed change output — the outpoint a
-    /// CPFP child pins and the asset its fee must be paid in. Both [`Wollet::cpfp_of`] and
-    /// [`Wollet::cpfp_fee_asset`] derive from this single source, so the pinned input and the
-    /// declared fee asset can never disagree (a multi-change parent would otherwise diverge).
+    /// Sequentia: an unconfirmed output of `txid` that this wallet can spend — the link a CPFP child
+    /// pins so a miner evaluates the two as a package. Prefers our own change (sender-side CPFP) and
+    /// falls back to any unconfirmed wallet output (receiver-side CPFP — speeding up a payment we
+    /// were sent). It is only the *link*: the child's fee is funded separately, so the asset of this
+    /// output does not dictate the fee asset.
     #[cfg(feature = "sequentia")]
-    fn cpfp_change(&self, txid: Txid) -> Result<(OutPoint, AssetId), Error> {
+    fn cpfp_spendable_outpoint(&self, txid: Txid) -> Result<OutPoint, Error> {
         let wtx = self.transaction(&txid)?.ok_or(Error::MissingTransaction)?;
-        let change = wtx
+        let pick = wtx
             .outputs
             .iter()
             .flatten()
-            .find(|o| o.ext_int == Chain::Internal && o.height.is_none())
+            .filter(|o| o.height.is_none())
+            .find(|o| o.ext_int == Chain::Internal)
+            .or_else(|| wtx.outputs.iter().flatten().find(|o| o.height.is_none()))
             .ok_or_else(|| {
-                Error::Generic("no unconfirmed change output to attach a CPFP child to".into())
+                Error::Generic("no unconfirmed wallet output to attach a CPFP child to".into())
             })?;
-        Ok((change.outpoint, change.unblinded.asset))
+        Ok(pick.outpoint)
     }
 
-    /// Sequentia: build a child-pays-for-parent rescue that spends an unconfirmed transaction's
-    /// change output back to the wallet, so a high child fee lifts the package's fee rate. The
-    /// caller chains a high `.fee_rate(...)` and, when the change is a non-policy asset,
-    /// `.fee_asset(change_asset, rate)` where `change_asset` is [`Wollet::cpfp_fee_asset`] (the
-    /// fee is paid in the change's own asset), then `.finish(wollet)`. CPFP only helps a parent
-    /// producers will already relay; it cannot rescue one stranded because producers reject its
-    /// fee asset.
+    /// Sequentia: build a child-pays-for-parent rescue for a parent stuck on too low a fee. The
+    /// child force-includes an unconfirmed wallet output of the parent — establishing the
+    /// parent→child link a miner evaluates as a package — while leaving normal coin selection on, so
+    /// the caller funds a high fee in *any producer-accepted* asset (default the policy asset, which
+    /// producers always mine) rather than being confined to the pinned output's asset. The caller
+    /// chains `.fee_rate(...)` (see [`Wollet::cpfp_suggested_feerate`]) and, for a non-policy fee
+    /// asset, `.fee_asset(asset, rate)`, then `.finish(wollet)`.
+    ///
+    /// CPFP only helps a parent producers will already relay (a low fee in an *accepted* asset); it
+    /// cannot rescue one stranded because producers reject its fee asset — that is a job for
+    /// [`Wollet::replace_tx_of`], re-paying the fee in an accepted asset.
     #[cfg(feature = "sequentia")]
     pub fn cpfp_of(&self, txid: Txid) -> Result<crate::TxBuilder, Error> {
-        let (outpoint, _asset) = self.cpfp_change(txid)?;
-        Ok(crate::TxBuilder::new(self.network()).set_wallet_utxos(vec![outpoint]))
+        let ext = self.external_utxo_for(self.cpfp_spendable_outpoint(txid)?)?;
+        Ok(crate::TxBuilder::new(self.network()).add_external_utxos(vec![ext])?)
     }
 
-    /// Sequentia: the asset a CPFP child's fee must be paid in — the asset of the very change
-    /// output [`Wollet::cpfp_of`] pins. The caller passes this to `.fee_asset(...)` (or omits it
-    /// when it is the policy asset) so the fee asset always matches the only available input.
+    /// Sequentia: a conservative child fee rate (sat/kvb) that lifts the {parent, child} package to
+    /// `target_feerate` (sat/kvb). Sizes the child so that, even crediting the parent with zero
+    /// effective fee, the package clears the target:
+    /// `child = target * (vsize_parent + vsize_child) / vsize_child`. It can only over-pay (the
+    /// parent's own fee further helps), which is the safe side for a rescue. The caller passes the
+    /// result to `.fee_rate(...)` on [`Wollet::cpfp_of`].
     #[cfg(feature = "sequentia")]
-    pub fn cpfp_fee_asset(&self, txid: Txid) -> Result<AssetId, Error> {
-        Ok(self.cpfp_change(txid)?.1)
+    pub fn cpfp_suggested_feerate(&self, txid: Txid, target_feerate: f32) -> Result<f32, Error> {
+        let wtx = self.transaction(&txid)?.ok_or(Error::MissingTransaction)?;
+        let parent_vsize = (wtx.tx.weight() as f32 / 4.0).max(1.0);
+        let child_vsize = 1100.0_f32; // rough confidential-child estimate; conservative
+        Ok(target_feerate * (parent_vsize + child_vsize) / child_vsize)
     }
 
     /// Extract the wallet UTXOs that a PSET is creating

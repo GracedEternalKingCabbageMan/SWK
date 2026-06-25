@@ -112,6 +112,8 @@ mod pos;
 mod pset_create;
 #[cfg(feature = "registry")]
 pub mod registry;
+#[cfg(feature = "sequentia")]
+mod seqdex_swap;
 mod tx_builder;
 mod update;
 mod util;
@@ -142,6 +144,8 @@ pub use crate::wollet::DirectoryIdHash;
 pub use crate::tx_builder::{BuiltTx, TxBuilder, WolletTxBuilder};
 #[cfg(feature = "sequentia")]
 pub use crate::tx_builder::sequentia_stake_script;
+#[cfg(feature = "sequentia")]
+pub use crate::seqdex_swap::{SeqdexSwapRequest, SeqdexSwapRequestOpts, SeqdexUnblindedInput};
 pub use crate::update::{DownloadTxResult, Update};
 pub use crate::util::EC;
 pub use crate::wollet::{Tip, Wollet, WolletBuilder};

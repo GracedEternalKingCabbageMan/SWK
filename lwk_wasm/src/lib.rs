@@ -39,6 +39,7 @@ mod public_key;
 mod registry;
 #[cfg(feature = "simplicity")]
 mod secret_key;
+mod seqdex_swap;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod serial;
 mod signer;
@@ -126,6 +127,7 @@ pub use public_key::PublicKey;
 pub use registry::{AssetMeta, Registry, RegistryPost};
 #[cfg(feature = "simplicity")]
 pub use secret_key::SecretKey;
+pub use seqdex_swap::SwapRequest;
 pub use signer::Signer;
 pub use store::{JsStorage, JsStoreLink, JsTestStore};
 #[cfg(feature = "simplicity")]

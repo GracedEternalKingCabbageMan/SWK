@@ -113,6 +113,8 @@ mod pset_create;
 #[cfg(feature = "registry")]
 pub mod registry;
 #[cfg(feature = "sequentia")]
+mod seqdex_htlc;
+#[cfg(feature = "sequentia")]
 mod seqdex_swap;
 mod tx_builder;
 mod update;
@@ -144,6 +146,11 @@ pub use crate::wollet::DirectoryIdHash;
 pub use crate::tx_builder::{BuiltTx, TxBuilder, WolletTxBuilder};
 #[cfg(feature = "sequentia")]
 pub use crate::tx_builder::sequentia_stake_script;
+#[cfg(feature = "sequentia")]
+pub use crate::seqdex_htlc::{
+    build_claim_tx, build_htlc_redeem_script, build_refund_tx, generate_swap_secret,
+    pubkey_for_secret, secret_from_hex, SeqHtlcSpend, SwapSecret,
+};
 #[cfg(feature = "sequentia")]
 pub use crate::seqdex_swap::{SeqdexSwapRequest, SeqdexSwapRequestOpts, SeqdexUnblindedInput};
 pub use crate::update::{DownloadTxResult, Update};

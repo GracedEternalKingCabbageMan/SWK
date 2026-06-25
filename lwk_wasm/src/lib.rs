@@ -39,6 +39,7 @@ mod public_key;
 mod registry;
 #[cfg(feature = "simplicity")]
 mod secret_key;
+mod seqdex_htlc;
 mod seqdex_swap;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod serial;
@@ -127,6 +128,10 @@ pub use public_key::PublicKey;
 pub use registry::{AssetMeta, Registry, RegistryPost};
 #[cfg(feature = "simplicity")]
 pub use secret_key::SecretKey;
+pub use seqdex_htlc::{
+    build_seq_htlc_claim_tx, build_seq_htlc_redeem_script, build_seq_htlc_refund_tx,
+    generate_swap_secret_js,
+};
 pub use seqdex_swap::SwapRequest;
 pub use signer::Signer;
 pub use store::{JsStorage, JsStoreLink, JsTestStore};

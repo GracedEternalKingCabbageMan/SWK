@@ -12,8 +12,8 @@ merged.
 ## What's different from upstream LWK
 
 - **Sequentia network** — `lwk_common::Network::sequentia_testnet()` models the
-  testnet (`chain=test`) as a custom Elements network with Sequentia's policy
-  (native) asset `c8eccacf…`, genesis `c2a0a99b…`, and address parameters
+  testnet (`chain=test`) as a custom Elements network with Sequentia's policy asset, the
+  Sequence token (SEQ) (`c8eccacf…`), genesis `c2a0a99b…`, and address parameters
   (base58 p2pkh 111 / p2sh 196 / blinded 70, bech32 `tb`, blech32 `tsqb`). It
   identifies as `sequentia-testnet`.
 - **Vendored `rust-elements` with a `sequentia` feature** (`./rust-elements`,

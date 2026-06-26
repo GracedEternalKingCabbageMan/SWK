@@ -107,6 +107,8 @@ pub fn new_secret() -> (String, String) {
 }
 
 /// Evidence + verdict of the reveal gate.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnchorEvidence {
     /// SEQ funding block's Bitcoin anchor height, or `-1` if the block carries none.
     pub seq_anchor_height: i64,
@@ -549,89 +551,117 @@ fn de_i64_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
 }
 
 /// A cross-chain market the maker makes (BTC <-> a Sequentia asset).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XchainMarket {
+    /// The BTC side asset id, display hex.
     #[serde(default)]
     pub btc_asset: String,
+    /// The Sequentia asset id, display hex.
     #[serde(default)]
     pub seq_asset: String,
+    /// Market name.
     #[serde(default)]
     pub name: String,
+    /// Maker's SEQ-asset reserve, atoms.
     #[serde(default, deserialize_with = "de_u64_str")]
     pub seq_reserve: u64,
+    /// Maker's BTC reserve, sats.
     #[serde(default, deserialize_with = "de_u64_str")]
     pub btc_reserve: u64,
+    /// Price: SEQ-asset units per BTC.
     #[serde(default)]
     pub price_seq_per_btc: f64,
 }
 
 /// A maker quote for buying `seq_amount` of an asset with BTC.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XQuote {
+    /// Single-use quote id to pass to propose.
     #[serde(default)]
     pub quote_id: String,
+    /// SEQ-asset amount quoted, atoms.
     #[serde(default, deserialize_with = "de_u64_str")]
     pub seq_amount: u64,
+    /// BTC amount required, sats.
     #[serde(default, deserialize_with = "de_u64_str")]
     pub btc_amount: u64,
+    /// Price: SEQ-asset units per BTC.
     #[serde(default)]
     pub price_seq_per_btc: f64,
+    /// Maker commission, sats.
     #[serde(default, deserialize_with = "de_u64_str")]
     pub fee_btc: u64,
+    /// Maker's BTC-leg claim pubkey, hex.
     #[serde(default)]
     pub maker_btc_claim_pub: String,
+    /// Maker's SEQ-leg refund pubkey, hex.
     #[serde(default)]
     pub maker_seq_refund_pub: String,
+    /// BTC HTLC CLTV locktime the taker must use (Bitcoin height).
     #[serde(default)]
     pub btc_locktime: u32,
+    /// SEQ HTLC CLTV locktime (Sequentia height).
     #[serde(default)]
     pub seq_locktime: u32,
+    /// Quote expiry, unix seconds.
     #[serde(default, deserialize_with = "de_i64_str")]
     pub expires_at_unix: i64,
 }
 
 /// The maker's SEQ-leg HTLC funding the taker independently anchor-verifies + claims.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XSeqLeg {
+    /// SEQ-leg HTLC funding txid.
     #[serde(default)]
     pub txid: String,
+    /// SEQ-leg HTLC funding vout.
     #[serde(default)]
     pub vout: u32,
+    /// SEQ block hash the funding landed in (for the taker's anchor lookup).
     #[serde(default)]
     pub block_hash: String,
     /// Maker-REPORTED anchor height — informational only; the taker re-derives it
     /// from its OWN SEQ esplora in the reveal gate and NEVER trusts this for safety.
     #[serde(default, deserialize_with = "de_i64_str")]
     pub anchor_height: i64,
+    /// SEQ-leg redeemScript hex (value-binding compared vs the rebuilt script).
     #[serde(default)]
     pub redeem_script: String,
+    /// SEQ-leg amount, atoms.
     #[serde(default, deserialize_with = "de_u64_str")]
     pub amount: u64,
+    /// SEQ-leg asset id, display hex.
     #[serde(default)]
     pub asset_id: String,
 }
 
 /// Live status of a cross-chain swap by id.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XSwapStatus {
+    /// The swap id.
     #[serde(default)]
     pub swap_id: String,
     /// Enum name (grpc-gateway serializes enums by name): PENDING_BTC_LOCK,
     /// SEQ_LOCKED, SEQ_CLAIMED, BTC_CLAIMED, REFUNDED, FAILED.
     #[serde(default)]
     pub state: String,
+    /// The maker's SEQ leg, if locked.
     #[serde(default)]
     pub seq_leg: Option<XSeqLeg>,
+    /// The SEQ claim txid, once the taker revealed.
     #[serde(default)]
     pub seq_claim_txid: String,
+    /// The maker's BTC claim txid, once settled.
     #[serde(default)]
     pub btc_claim_txid: String,
+    /// The revealed preimage, once on-chain (the maker reads it to claim BTC).
     #[serde(default)]
     pub preimage: String,
+    /// Free-text detail / failure reason.
     #[serde(default)]
     pub detail: String,
 }
@@ -640,13 +670,17 @@ pub struct XSwapStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BtcLeg {
+    /// BTC HTLC funding txid.
     pub txid: String,
+    /// BTC HTLC funding vout.
     pub vout: u32,
-    /// int64 over the wire.
+    /// BTC funding confirmation height (int64 over the wire).
     pub height: String,
+    /// BTC HTLC redeemScript hex.
     pub redeem_script: String,
-    /// uint64 over the wire.
+    /// BTC HTLC funding amount, sats (uint64 over the wire).
     pub amount: String,
+    /// BTC asset id, display hex.
     pub asset_id: String,
 }
 
@@ -665,11 +699,13 @@ impl BtcLeg {
 }
 
 /// Accepted propose: the swap id + the maker's SEQ leg to verify and claim.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProposeAccepted {
+    /// The daemon's swap id — persist this immediately (before anything else).
     #[serde(default)]
     pub swap_id: String,
+    /// The maker's SEQ leg to anchor-verify + claim.
     #[serde(default)]
     pub seq_leg: Option<XSeqLeg>,
 }
@@ -764,12 +800,19 @@ pub enum XStep {
 /// daemon-wire [`XSeqLeg`] whose ints are string-encoded).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XSeqLegState {
+    /// SEQ-leg HTLC funding txid.
     pub txid: String,
+    /// SEQ-leg HTLC funding vout.
     pub vout: u32,
+    /// SEQ block hash the funding landed in (for the anchor lookup).
     pub block_hash: String,
+    /// Maker-reported anchor height (informational; the gate re-derives it).
     pub anchor_height: i64,
+    /// SEQ-leg redeemScript hex (value-binding compared vs the daemon).
     pub redeem_script: String,
+    /// SEQ-leg amount, atoms.
     pub amount: u64,
+    /// SEQ-leg asset id, display hex.
     pub asset_id: String,
 }
 
@@ -792,32 +835,55 @@ impl From<&XSeqLeg> for XSeqLegState {
 /// BTC claim and is unrecoverable if lost, so this whole record is sealed at rest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XchainSwapState {
+    /// The step reached (drives recovery + refundability).
     pub step: XStep,
+    /// The Sequentia asset being bought, display hex.
     pub seq_asset: String,
+    /// Amount of `seq_asset` bought, atoms.
     pub seq_amount: u64,
+    /// Amount of BTC paid, sats.
     pub btc_amount: u64,
+    /// Maker commission, sats.
     pub fee_btc: u64,
     /// SEAL — the non-HD swap preimage (gates the BTC claim).
     pub secret_hex: String,
+    /// `H = sha256(secret)`, hex.
     pub hash_hex: String,
+    /// Alice's SEQ-leg claim pubkey, hex.
     pub seq_claim_pub: String,
+    /// Alice's BTC-leg refund pubkey, hex.
     pub btc_refund_pub: String,
     /// Which HD path funded the leg keys — recovery must derive the SAME key.
     pub key_path: PathMode,
+    /// Maker's BTC-leg claim pubkey, hex.
     pub maker_btc_claim_pub: String,
+    /// Maker's SEQ-leg refund pubkey, hex.
     pub maker_seq_refund_pub: String,
+    /// BTC HTLC CLTV locktime (Bitcoin height).
     pub btc_locktime: u32,
+    /// SEQ HTLC CLTV locktime (Sequentia height).
     pub seq_locktime: u32,
+    /// The maker's quote id (single-use).
     pub quote_id: String,
+    /// The daemon's swap id (persist from the propose response).
     pub swap_id: String,
+    /// The BTC HTLC redeemScript hex.
     pub btc_redeem_script: String,
+    /// The BTC HTLC P2SH address.
     pub btc_p2sh_address: String,
+    /// The BTC HTLC P2SH scriptPubKey hex (to locate the funding output).
     pub btc_p2sh_spk_hex: String,
+    /// The BTC funding txid, once broadcast.
     pub btc_funding_txid: Option<String>,
+    /// The BTC funding vout.
     pub btc_vout: Option<u32>,
+    /// The BTC funding confirmation height (`H_btc`).
     pub btc_height: Option<i64>,
+    /// The maker's SEQ leg, once proposed/accepted.
     pub seq_leg: Option<XSeqLegState>,
+    /// The SEQ claim txid, once revealed/claimed.
     pub seq_claim_txid: Option<String>,
+    /// The BTC refund txid, if refunded.
     pub btc_refund_txid: Option<String>,
 }
 

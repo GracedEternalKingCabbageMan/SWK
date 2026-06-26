@@ -1,21 +1,21 @@
-//! Sequentia (SeqDEX) cross-chain HTLC — SEQ-leg wasm bindings for the browser taker.
+//! Sequentia (SeqDEX) cross-chain HTLC — Sequentia-leg wasm bindings for the browser taker.
 //!
-//! Phase 6c-2. This is the SEQ-side counterpart to the same-chain swap binding in
+//! Phase 6c-2. This is the Sequentia-side counterpart to the same-chain swap binding in
 //! [`crate::seqdex_swap`]. It exposes, to JS, exactly the pieces the web wallet needs
-//! to do its half of a cross-chain BTC↔SEQ swap where the **taker BUYS a SEQ asset
+//! to do its half of a cross-chain BTC↔Sequentia swap where the **taker BUYS a Sequentia asset
 //! with BTC**:
 //!
 //!   1. [`generateSwapSecret`] — make the 32-byte secret `s` and `H = sha256(s)`.
-//!   2. [`Signer::htlcKeypair`] — derive the taker's SEQ-claim key (pubkey for the
+//!   2. [`Signer::htlcKeypair`] — derive the taker's Sequentia-claim key (pubkey for the
 //!      daemon's `ProposeXchainSwap`; the private scalar stays in the wallet for
 //!      signing the claim).
 //!   3. [`buildSeqHtlcRedeemScript`] — the HTLC redeemScript (byte-identical to the
 //!      daemon's `LockScript`).
-//!   4. [`buildSeqHtlcClaimTx`] — the signed SEQ-leg claim tx (IF/redeem branch),
+//!   4. [`buildSeqHtlcClaimTx`] — the signed Sequentia-leg claim tx (IF/redeem branch),
 //!      revealing `s` on-chain. This is the step that lets the daemon then extract
 //!      `s` and claim the BTC leg.
-//!   5. [`buildSeqHtlcRefundTx`] — the signed SEQ-leg refund tx (ELSE/CLTV branch),
-//!      built for completeness/symmetry (the SEQ refund is the maker's in the MVP).
+//!   5. [`buildSeqHtlcRefundTx`] — the signed Sequentia-leg refund tx (ELSE/CLTV branch),
+//!      built for completeness/symmetry (the Sequentia refund is the maker's in the MVP).
 //!
 //! The BTC-leg lock + BTC refund are NOT here — they are the wallet's existing
 //! `btc.js`. All core logic lives in `lwk_wollet::seqdex_htlc`; this is the thin
@@ -53,11 +53,11 @@ pub fn generate_swap_secret_js() -> Result<JsValue, Error> {
     })?)
 }
 
-/// The taker's SEQ-leg HTLC claim keypair.
+/// The taker's Sequentia-leg HTLC claim keypair.
 ///
 /// JS shape: `{ public_key: string (33-byte compressed hex), secret_hex: string }`.
 /// `public_key` goes to the daemon as `taker_seq_claim_pub`; `secret_hex` is the
-/// scalar the wallet keeps to sign the SEQ-leg claim ([`buildSeqHtlcClaimTx`]).
+/// scalar the wallet keeps to sign the Sequentia-leg claim ([`buildSeqHtlcClaimTx`]).
 #[derive(Serialize)]
 struct HtlcKeypairJson {
     public_key: String,
@@ -145,7 +145,7 @@ fn parse_spend(spend: JsValue) -> Result<SeqHtlcSpend, Error> {
     })
 }
 
-/// Build the signed SEQ-leg **claim** (IF/redeem branch) tx, revealing the preimage.
+/// Build the signed Sequentia-leg **claim** (IF/redeem branch) tx, revealing the preimage.
 ///
 /// - `spend`: `{ txid, vout, amount, asset_id, dest_spk, fee }` of the SEQ HTLC the
 ///   daemon locked (from the `ProposeXchainSwap` accept's `seq_leg`).
@@ -171,7 +171,7 @@ pub fn build_seq_htlc_claim_tx(
     Ok(build_claim_tx(&spend, &script, &key, &preimage)?)
 }
 
-/// Build the signed SEQ-leg **refund** (ELSE/CLTV branch) tx, valid once nLockTime
+/// Build the signed Sequentia-leg **refund** (ELSE/CLTV branch) tx, valid once nLockTime
 /// reaches `locktime`.
 ///
 /// `refund_secret` is the scalar (hex) of the refund key embedded in the script.

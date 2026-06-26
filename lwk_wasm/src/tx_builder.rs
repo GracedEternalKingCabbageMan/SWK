@@ -145,8 +145,8 @@ impl TxBuilder {
             .into())
     }
 
-    /// Add a Sequentia staking output (bond): sends `satoshi` of the policy
-    /// asset to the canonical stake script for `staker_pubkey` (33-byte hex)
+    /// Add a Sequentia staking output (bond): sends `satoshi` of the Sequence token (SEQ)
+    /// to the canonical stake script for `staker_pubkey` (33-byte hex)
     /// with a `csv` BIP68 relative-timelock. Spending it (unbonding) requires
     /// the staker key and csv maturity.
     #[wasm_bindgen(js_name = addStakeOutput)]

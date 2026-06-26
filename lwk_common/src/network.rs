@@ -159,7 +159,7 @@ impl Network {
     /// Return the Sequentia testnet (`chain=test`) network.
     ///
     /// Sequentia is an Elements chain, modelled here as a custom Elements
-    /// network carrying Sequentia's policy (native) asset, genesis hash, and
+    /// network carrying Sequentia's policy asset, the Sequence token (SEQ), genesis hash, and
     /// address parameters (base58 111/196/70, bech32 `tb`, blech32 `tsqb`).
     pub fn sequentia_testnet() -> Self {
         let policy_asset = AssetId::from_str(

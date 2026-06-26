@@ -8,11 +8,11 @@
 //! - [`addr`] — the shared `(coin_type, HRP, Bitcoin network)` address model.
 //! - [`htlc`] — the BTC-leg HTLC, whose redeemScript delegates to the kit's single
 //!   source [`crate::build_htlc_redeem_script`] (byte-identical to the SEQ leg).
-//! - [`esplora`] / [`wallet`] — the blocking testnet4 esplora client + wallet
-//!   (scan, coin selection, P2WPKH build/sign/broadcast, HTLC funding lookup).
-//!
-//! Phase 0 ships the blocking transport (Ambra). The async transport (wasm) and
-//! the watch-only / `DualChainWallet` split land in later phases.
+//! - `core` — the I/O-free wallet logic (derivation, gap-scan, coin selection,
+//!   P2WPKH build+sign), shared by both transports so they are byte-identical.
+//! - [`esplora`] — testnet4 esplora wire types + the blocking and async clients.
+//! - [`wallet`] / [`wallet_async`] — the blocking (Ambra) and async (wasm/web)
+//!   wallet drivers over `core`.
 
 // `btc-blocking` must never be unified into a wasm build: `reqwest::blocking` is
 // absent on wasm32, and additive feature unification could otherwise pull it in.
@@ -25,7 +25,14 @@ compile_error!(
 pub mod addr;
 pub mod htlc;
 
-#[cfg(all(feature = "btc-blocking", not(target_arch = "wasm32")))]
-pub mod esplora;
+#[cfg(any(feature = "btc-blocking", feature = "btc-async"))]
+mod core;
+#[cfg(any(feature = "btc-blocking", feature = "btc-async"))]
+mod esplora;
+#[cfg(any(feature = "btc-blocking", feature = "btc-async"))]
+pub use core::{address, BtcPrepared, BtcScan, HtlcFunding, DEFAULT_FEERATE};
+
 #[cfg(all(feature = "btc-blocking", not(target_arch = "wasm32")))]
 pub mod wallet;
+#[cfg(feature = "btc-async")]
+pub mod wallet_async;

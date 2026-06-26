@@ -98,10 +98,21 @@ impl Network {
         matches!(&self.inner, &lwk_common::Network::TestnetLiquid)
     }
 
-    /// Return true if the network is a regtest network
+    /// Return true if the network is a regtest network.
+    ///
+    /// NOTE: Sequentia is modelled as a custom Elements network, so this returns
+    /// true for Sequentia too — use [`Self::is_sequentia`] to distinguish it.
     #[wasm_bindgen(js_name = isRegtest)]
     pub fn is_regtest(&self) -> bool {
         matches!(&self.inner, &lwk_common::Network::CustomElements(_))
+    }
+
+    /// Return true if the network is Sequentia (testnet or, later, mainnet).
+    /// Consumers should use this rather than `isRegtest()`, which is true for
+    /// Sequentia by construction (it is a custom Elements network).
+    #[wasm_bindgen(js_name = isSequentia)]
+    pub fn is_sequentia(&self) -> bool {
+        matches!(&self.inner, &lwk_common::Network::CustomElements(_)) && self.to_string_js().starts_with("sequentia")
     }
 
     /// Return a string representation of the network, like "liquid", "liquid-testnet" or "liquid-regtest"

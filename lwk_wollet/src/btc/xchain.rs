@@ -1039,6 +1039,40 @@ mod tests {
         }
     }
 
+    // Live read-only validation of the REST client + the anchor gate against the
+    // running infra. Ignored by default (needs network); run with:
+    //   cargo test -p lwk_wollet --features btc-blocking --lib \
+    //     btc::xchain::tests::live_markets_and_gate -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live Sequentia testnet infra"]
+    fn live_markets_and_gate() {
+        let daemon = "http://159.195.15.140/dex";
+        let seq = "http://159.195.15.140/api";
+        let t4 = "http://159.195.15.140/testnet4/api";
+
+        // (1) the XchainClient parses the live daemon's markets.
+        let markets = blocking::xchain_markets(daemon).expect("markets");
+        assert!(!markets.is_empty(), "expected live xchain markets");
+        eprintln!("LIVE markets: {} (e.g. {} seqReserve={})", markets.len(), markets[0].name, markets[0].seq_reserve);
+
+        // (2) the anchor gate, evaluated against the real SEQ tip block + the live
+        //     testnet4 view. btc_leg_height=0 so only the anchored+depth conditions
+        //     decide; this exercises the 3 live GETs + the parsing + the predicate.
+        let client = reqwest::blocking::Client::new();
+        let tip_hash = client.get(format!("{seq}/blocks/tip/hash")).send().unwrap().text().unwrap();
+        let tip_hash = tip_hash.trim();
+        let ev = blocking::verify_seq_leg_safe(seq, tip_hash, 0, t4, 1).expect("gate");
+        eprintln!(
+            "LIVE gate: seq_anchor_height={} btc_tip={} status={} depth={} ok={}",
+            ev.seq_anchor_height, ev.btc_tip, ev.anchor_status, ev.depth, ev.ok
+        );
+        // The tip block must be anchored to a real Bitcoin block and the chain's
+        // anchor status healthy — the safety-critical live behavior.
+        assert!(ev.seq_anchor_height >= 0, "SEQ tip must carry a Bitcoin anchor");
+        assert!(ev.btc_tip > 0, "must read the taker's own testnet4 tip");
+        assert_eq!(ev.anchor_status, "ok", "anchor status must be ok");
+    }
+
     // The non-HD secret must round-trip through the at-rest seal and never appear
     // in the sealed blob; a wrong passphrase must fail.
     #[test]

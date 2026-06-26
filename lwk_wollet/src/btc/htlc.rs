@@ -105,7 +105,12 @@ pub fn build_refund_tx(
         input: vec![TxIn {
             previous_output: OutPoint { txid, vout: spend.vout },
             script_sig: ScriptBuf::new(),
-            sequence: Sequence(0xffff_fffe), // non-final (BIP68 disabled) so absolute CLTV applies
+            // 0xfffffffd: non-final (bit 31 set -> BIP68 disabled, so absolute
+            // CLTV still applies) AND BIP125-replaceable, so a time-sensitive
+            // refund can be fee-bumped before its deadline. It must NOT be raised
+            // to a final value (0xffffffff): that makes OP_CLTV FAIL and the refund
+            // tx invalid/un-minable (it does not make it spendable before locktime).
+            sequence: Sequence(0xffff_fffd),
             witness: Witness::new(),
         }],
         output: vec![TxOut { value: Amount::from_sat(out_value), script_pubkey: spend.dest_spk.clone() }],
@@ -180,7 +185,7 @@ mod tests {
         assert_eq!(tx.version, super::Version::TWO);
         assert_eq!(tx.lock_time.to_consensus_u32(), 800_000); // CLTV enforced
         assert_eq!(tx.input.len(), 1);
-        assert_eq!(tx.input[0].sequence.0, 0xffff_fffe); // non-final
+        assert_eq!(tx.input[0].sequence.0, 0xffff_fffd); // non-final (CLTV applies) + BIP125-replaceable
         assert!(tx.input[0].witness.is_empty()); // legacy P2SH, no witness
         assert_eq!(tx.output.len(), 1);
         assert_eq!(tx.output[0].value.to_sat(), 48_000); // amount - fee

@@ -160,6 +160,41 @@ pub fn deadline_ok(seq_tip: i64, seq_locktime: u32, margin: i64) -> bool {
     seq_tip >= 0 && seq_tip + margin < seq_locktime as i64
 }
 
+/// A sane default SEQ-chain native feerate (atoms per vByte) for the claim, well
+/// above the node's ~0.1-atom/vByte min-relay floor so a rate-derived claim fee
+/// always clears relay. This is a SEQUENTIA feerate, NOT a Bitcoin sat/vB.
+pub const DEFAULT_SEQ_CLAIM_FEERATE: u64 = 1;
+
+/// Conservative vbyte estimate for the single-input SEQ HTLC claim tx: 1 P2SH
+/// HTLC input (72B max DER sig + 32B preimage + 1B OP_1 selector + ~114B
+/// OP_PUSHDATA1 redeemScript) + 2 explicit Elements outputs (recipient + fee).
+/// Deliberately OVER-estimates so the rate-derived fee never undershoots the
+/// node's own vsize-based relay floor. (Refine against an actual built claim.)
+pub fn claim_tx_vsize() -> u64 {
+    400
+}
+
+/// The SEQ-leg claim fee, in atoms of the CLAIMED asset: the native-equivalent of
+/// `seq_feerate_native * claim_tx_vsize()`, converted at the claimed asset's
+/// published acceptance rate. Replaces the old flat 100000-atom fee.
+///
+/// `rate` is the CLAIMED asset's acceptance rate (atoms per 1e8 native). It MUST
+/// be non-zero: a `rate == 0` asset is NOT fee-accepted by producers, so any claim
+/// in it is unrelayable — this returns `Err` rather than emitting a stuck claim
+/// (the rate==0 ⇒ 1:1 fallback of `convert_value_to_amount` is wrong here and is
+/// deliberately NOT used). `seq_feerate_native` is a SEQUENTIA native feerate
+/// (atoms/vByte), never a Bitcoin sat/vB. The result is still bounded by the
+/// `fee < seq_amount` guard in [`seq_claim`].
+pub fn seq_claim_fee_atoms(rate: u64, seq_feerate_native: u64) -> Result<u64, Error> {
+    if rate == 0 {
+        return Err(Error::Generic(
+            "claimed asset is not currently fee-accepted by producers; cannot build a relayable SEQ claim".into(),
+        ));
+    }
+    let native_value = seq_feerate_native.saturating_mul(claim_tx_vsize());
+    Ok(crate::seqdex_swap::convert_value_to_amount(native_value, rate))
+}
+
 /// The SEQ-leg redeemScript the taker rebuilds (claim = her SEQ-claim key, refund =
 /// the maker's SEQ-refund pubkey), as hex, so the caller can byte-compare it to the
 /// daemon-reported `seqLeg.redeemScript` (value-binding) before trusting the leg.
@@ -422,6 +457,18 @@ mod tests {
         assert!(deadline_ok(100, 200, 10)); // 100 + 10 < 200
         assert!(!deadline_ok(195, 200, 10)); // 195 + 10 >= 200 -> too close
         assert!(!deadline_ok(-1, 200, 10)); // no tip -> refuse
+    }
+
+    #[test]
+    fn claim_fee_sizing() {
+        // rate 0 (asset not fee-accepted) -> refuse, never emit an unrelayable claim.
+        assert!(seq_claim_fee_atoms(0, DEFAULT_SEQ_CLAIM_FEERATE).is_err());
+        // native (rate 1e8) -> fee == native_value == feerate * vsize.
+        let native = seq_claim_fee_atoms(100_000_000, 1).unwrap();
+        assert_eq!(native, claim_tx_vsize()); // 1 atom/vB * 400 vB
+        // a high-unit-value asset pays FEWER atoms (granularity), per first-principle 4.
+        let gold = seq_claim_fee_atoms(4_377_615_194_112, 1).unwrap();
+        assert!(gold >= 1 && gold < native, "a valuable asset pays fewer atoms (not a bug)");
     }
 
     // Legacy and canonical SEQ-claim keys differ (the web shim must record which).

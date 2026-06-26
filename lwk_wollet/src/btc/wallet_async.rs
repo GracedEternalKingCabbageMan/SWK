@@ -55,6 +55,13 @@ pub async fn prepare(
     core::build_signed_tx(&secp, &master, params, dest_addr, amount_sats, fee_rate, scan.change_next, utxos)
 }
 
+/// Live BTC fee rate (sat/vB) for confirming within `target_blocks` (async); for
+/// sizing a time-sensitive send/refund. `None` if unavailable.
+pub async fn fee_estimate(t4_api: &str, target_blocks: u16) -> Option<f64> {
+    let Ok(client) = tx::client() else { return None };
+    tx::fee_estimate(&client, t4_api.trim_end_matches('/'), target_blocks).await
+}
+
 /// Broadcast a raw transaction hex to testnet4 (async); returns the txid.
 pub async fn broadcast(t4_api: &str, tx_hex: &str) -> Result<String, Error> {
     let client = tx::client()?;

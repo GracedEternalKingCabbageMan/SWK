@@ -270,10 +270,60 @@ pub fn seq_claim(
 /// and the SEQ tip for the claim-deadline gate.
 #[cfg(all(feature = "btc-blocking", not(target_arch = "wasm32")))]
 pub mod blocking {
-    use super::{deadline_ok, evaluate_gate, map, AnchorEvidence, Error};
+    use super::*;
 
     fn client() -> Result<reqwest::blocking::Client, Error> {
         super::super::esplora::blocking::client()
+    }
+
+    fn post(client: &reqwest::blocking::Client, daemon: &str, path: &str, body: String) -> Result<String, Error> {
+        let resp = client
+            .post(format!("{}/v1/xchain/{path}", daemon.trim_end_matches('/')))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .map_err(map)?;
+        resp.text().map_err(map)
+    }
+
+    /// List the maker's cross-chain markets.
+    pub fn xchain_markets(daemon: &str) -> Result<Vec<XchainMarket>, Error> {
+        let body = post(&client()?, daemon, "markets", "{}".into())?;
+        Ok(parse_resp::<MarketsResp>(&body)?.markets)
+    }
+
+    /// Quote buying `seq_amount` of `seq_asset` with BTC.
+    pub fn xchain_quote(daemon: &str, seq_asset: &str, seq_amount: u64) -> Result<XQuote, Error> {
+        let req = QuoteReq { seq_asset, seq_amount: seq_amount.to_string() };
+        let body = post(&client()?, daemon, "quote", serde_json::to_string(&req).map_err(map)?)?;
+        parse_resp(&body)
+    }
+
+    /// Propose the swap (single-use quote; NEVER auto-retry on a transient error —
+    /// re-quote instead while the BTC leg stays locked). Persist `swapId` from the
+    /// result before doing anything else.
+    pub fn xchain_propose(
+        daemon: &str,
+        quote_id: &str,
+        hash: &str,
+        btc_leg: &BtcLeg,
+        taker_seq_claim_pub: &str,
+        taker_btc_refund_pub: &str,
+    ) -> Result<ProposeAccepted, Error> {
+        let req = ProposeReq { quote_id, hash, btc_leg, taker_seq_claim_pub, taker_btc_refund_pub };
+        let body = post(&client()?, daemon, "propose", serde_json::to_string(&req).map_err(map)?)?;
+        parse_resp::<ProposeResp>(&body)?
+            .accepted
+            .ok_or_else(|| Error::Generic("propose returned neither accepted nor fail".into()))
+    }
+
+    /// Poll a swap's status by id. A 404/NotFound (the maker's state is in-memory
+    /// and dies on restart; there is no by-hash lookup) is NOT swap failure — fall
+    /// back to the taker's own sealed state + on-chain watch.
+    pub fn xchain_swap_status(daemon: &str, swap_id: &str) -> Result<XSwapStatus, Error> {
+        let req = SwapReq { swap_id };
+        let body = post(&client()?, daemon, "swap", serde_json::to_string(&req).map_err(map)?)?;
+        parse_resp(&body)
     }
 
     /// Evaluate the reveal gate from the taker's OWN SEQ esplora + testnet4 view,
@@ -347,10 +397,57 @@ pub mod blocking {
 /// Async transport (wasm / web): the same reveal gate + broadcast + SEQ tip.
 #[cfg(feature = "btc-async")]
 pub mod asyncr {
-    use super::{deadline_ok, evaluate_gate, map, AnchorEvidence, Error};
+    use super::*;
 
     fn client() -> Result<reqwest::Client, Error> {
         super::super::esplora::asyncr::client()
+    }
+
+    async fn post(client: &reqwest::Client, daemon: &str, path: &str, body: String) -> Result<String, Error> {
+        let resp = client
+            .post(format!("{}/v1/xchain/{path}", daemon.trim_end_matches('/')))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(map)?;
+        resp.text().await.map_err(map)
+    }
+
+    /// List the maker's cross-chain markets (async).
+    pub async fn xchain_markets(daemon: &str) -> Result<Vec<XchainMarket>, Error> {
+        let body = post(&client()?, daemon, "markets", "{}".into()).await?;
+        Ok(parse_resp::<MarketsResp>(&body)?.markets)
+    }
+
+    /// Quote buying `seq_amount` of `seq_asset` with BTC (async).
+    pub async fn xchain_quote(daemon: &str, seq_asset: &str, seq_amount: u64) -> Result<XQuote, Error> {
+        let req = QuoteReq { seq_asset, seq_amount: seq_amount.to_string() };
+        let body = post(&client()?, daemon, "quote", serde_json::to_string(&req).map_err(map)?).await?;
+        parse_resp(&body)
+    }
+
+    /// Propose the swap (async; single-use quote, never auto-retry).
+    pub async fn xchain_propose(
+        daemon: &str,
+        quote_id: &str,
+        hash: &str,
+        btc_leg: &BtcLeg,
+        taker_seq_claim_pub: &str,
+        taker_btc_refund_pub: &str,
+    ) -> Result<ProposeAccepted, Error> {
+        let req = ProposeReq { quote_id, hash, btc_leg, taker_seq_claim_pub, taker_btc_refund_pub };
+        let body = post(&client()?, daemon, "propose", serde_json::to_string(&req).map_err(map)?).await?;
+        parse_resp::<ProposeResp>(&body)?
+            .accepted
+            .ok_or_else(|| Error::Generic("propose returned neither accepted nor fail".into()))
+    }
+
+    /// Poll a swap's status by id (async). Treat a 404 as "daemon forgot", not failure.
+    pub async fn xchain_swap_status(daemon: &str, swap_id: &str) -> Result<XSwapStatus, Error> {
+        let req = SwapReq { swap_id };
+        let body = post(&client()?, daemon, "swap", serde_json::to_string(&req).map_err(map)?).await?;
+        parse_resp(&body)
     }
 
     /// Evaluate the reveal gate from the taker's OWN nodes (async). See the
@@ -431,9 +528,240 @@ pub mod asyncr {
     }
 }
 
+// --- daemon XchainService REST client -----------------------------------------
+//
+// POST JSON under /v1/xchain/{markets,quote,propose,swap} (grpc-gateway protojson):
+// lowerCamelCase keys, EVERY uint64/int64 a JSON STRING, uint32/double numbers,
+// zero-valued fields OMITTED, and in-band failures as {"fail":{code,message}} at
+// HTTP 200. propose is NOT idempotent (the quote is single-use) and there is no
+// lookup-by-hash, so the caller must persist swapId before propose, never auto-retry
+// propose, and tolerate a 404 from /swap by falling back to its own sealed state.
+
+use serde::{Deserialize, Serialize};
+
+/// Deserialize a grpc-gateway string-encoded uint64 (present => parse the string).
+fn de_u64_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    String::deserialize(d)?.parse().map_err(serde::de::Error::custom)
+}
+/// Deserialize a grpc-gateway string-encoded int64.
+fn de_i64_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    String::deserialize(d)?.parse().map_err(serde::de::Error::custom)
+}
+
+/// A cross-chain market the maker makes (BTC <-> a Sequentia asset).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XchainMarket {
+    #[serde(default)]
+    pub btc_asset: String,
+    #[serde(default)]
+    pub seq_asset: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, deserialize_with = "de_u64_str")]
+    pub seq_reserve: u64,
+    #[serde(default, deserialize_with = "de_u64_str")]
+    pub btc_reserve: u64,
+    #[serde(default)]
+    pub price_seq_per_btc: f64,
+}
+
+/// A maker quote for buying `seq_amount` of an asset with BTC.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XQuote {
+    #[serde(default)]
+    pub quote_id: String,
+    #[serde(default, deserialize_with = "de_u64_str")]
+    pub seq_amount: u64,
+    #[serde(default, deserialize_with = "de_u64_str")]
+    pub btc_amount: u64,
+    #[serde(default)]
+    pub price_seq_per_btc: f64,
+    #[serde(default, deserialize_with = "de_u64_str")]
+    pub fee_btc: u64,
+    #[serde(default)]
+    pub maker_btc_claim_pub: String,
+    #[serde(default)]
+    pub maker_seq_refund_pub: String,
+    #[serde(default)]
+    pub btc_locktime: u32,
+    #[serde(default)]
+    pub seq_locktime: u32,
+    #[serde(default, deserialize_with = "de_i64_str")]
+    pub expires_at_unix: i64,
+}
+
+/// The maker's SEQ-leg HTLC funding the taker independently anchor-verifies + claims.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XSeqLeg {
+    #[serde(default)]
+    pub txid: String,
+    #[serde(default)]
+    pub vout: u32,
+    #[serde(default)]
+    pub block_hash: String,
+    /// Maker-REPORTED anchor height — informational only; the taker re-derives it
+    /// from its OWN SEQ esplora in the reveal gate and NEVER trusts this for safety.
+    #[serde(default, deserialize_with = "de_i64_str")]
+    pub anchor_height: i64,
+    #[serde(default)]
+    pub redeem_script: String,
+    #[serde(default, deserialize_with = "de_u64_str")]
+    pub amount: u64,
+    #[serde(default)]
+    pub asset_id: String,
+}
+
+/// Live status of a cross-chain swap by id.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XSwapStatus {
+    #[serde(default)]
+    pub swap_id: String,
+    /// Enum name (grpc-gateway serializes enums by name): PENDING_BTC_LOCK,
+    /// SEQ_LOCKED, SEQ_CLAIMED, BTC_CLAIMED, REFUNDED, FAILED.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub seq_leg: Option<XSeqLeg>,
+    #[serde(default)]
+    pub seq_claim_txid: String,
+    #[serde(default)]
+    pub btc_claim_txid: String,
+    #[serde(default)]
+    pub preimage: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
+/// The taker's BTC-leg HTLC details sent in a propose.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BtcLeg {
+    pub txid: String,
+    pub vout: u32,
+    /// int64 over the wire.
+    pub height: String,
+    pub redeem_script: String,
+    /// uint64 over the wire.
+    pub amount: String,
+    pub asset_id: String,
+}
+
+impl BtcLeg {
+    /// Build from native values, formatting the wire string-ints.
+    pub fn new(txid: &str, vout: u32, height: i64, redeem_script: &str, amount: u64, asset_id: &str) -> Self {
+        Self {
+            txid: txid.to_string(),
+            vout,
+            height: height.to_string(),
+            redeem_script: redeem_script.to_string(),
+            amount: amount.to_string(),
+            asset_id: asset_id.to_string(),
+        }
+    }
+}
+
+/// Accepted propose: the swap id + the maker's SEQ leg to verify and claim.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposeAccepted {
+    #[serde(default)]
+    pub swap_id: String,
+    #[serde(default)]
+    pub seq_leg: Option<XSeqLeg>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct XFail {
+    #[serde(default)]
+    #[allow(dead_code)]
+    code: String,
+    #[serde(default)]
+    message: String,
+}
+
+/// Parse a daemon response body, surfacing an in-band `{fail:{...}}` (HTTP 200) as
+/// an error before deserializing the success arm `T`.
+fn parse_resp<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, Error> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(map)?;
+    if let Some(fail) = v.get("fail") {
+        let f: XFail = serde_json::from_value(fail.clone()).map_err(map)?;
+        return Err(Error::Generic(format!("daemon rejected the cross-chain request: {}", f.message)));
+    }
+    serde_json::from_value(v).map_err(map)
+}
+
+#[derive(Deserialize)]
+struct MarketsResp {
+    #[serde(default)]
+    markets: Vec<XchainMarket>,
+}
+
+#[derive(Deserialize)]
+struct ProposeResp {
+    #[serde(default)]
+    accepted: Option<ProposeAccepted>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuoteReq<'a> {
+    seq_asset: &'a str,
+    seq_amount: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProposeReq<'a> {
+    quote_id: &'a str,
+    hash: &'a str,
+    btc_leg: &'a BtcLeg,
+    taker_seq_claim_pub: &'a str,
+    taker_btc_refund_pub: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SwapReq<'a> {
+    swap_id: &'a str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_string_encoded_uint64_and_omitted_zero() {
+        // grpc-gateway: uint64 as strings, zero fields omitted.
+        let q: XQuote = serde_json::from_str(
+            r#"{"quoteId":"abc","seqAmount":"172409","btcAmount":"5000","feeBtc":"50","btcLocktime":900000,"seqLocktime":12345,"expiresAtUnix":"1700000000","makerBtcClaimPub":"02aa"}"#,
+        )
+        .unwrap();
+        assert_eq!(q.seq_amount, 172409);
+        assert_eq!(q.btc_amount, 5000);
+        assert_eq!(q.fee_btc, 50);
+        assert_eq!(q.btc_locktime, 900000);
+        assert_eq!(q.expires_at_unix, 1700000000);
+        assert_eq!(q.price_seq_per_btc, 0.0); // omitted -> default
+        assert_eq!(q.maker_seq_refund_pub, ""); // omitted -> default
+    }
+
+    #[test]
+    fn in_band_fail_is_an_error() {
+        // An in-band {fail} at HTTP 200 is surfaced as an error before the success arm.
+        let r: Result<ProposeResp, _> =
+            parse_resp(r#"{"fail":{"code":"UNKNOWN_QUOTE","message":"unknown or expired quote_id"}}"#);
+        assert!(r.is_err());
+        // propose success is under "accepted".
+        let ok: ProposeResp = parse_resp(r#"{"accepted":{"swapId":"s1","seqLeg":{"amount":"172409"}}}"#).unwrap();
+        let acc = ok.accepted.expect("accepted present");
+        assert_eq!(acc.swap_id, "s1");
+        assert_eq!(acc.seq_leg.unwrap().amount, 172409);
+    }
 
     // The reveal gate's truth table — the load-bearing safety predicate.
     #[test]

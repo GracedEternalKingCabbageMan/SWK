@@ -301,7 +301,10 @@ pub(super) fn build_signed_tx(
         .map(|u| TxIn {
             previous_output: u.outpoint,
             script_sig: ScriptBuf::new(),
-            sequence: Sequence::MAX,
+            // BIP125-replaceable (0xfffffffd, the max RBF-signalling value) so a
+            // stuck send / HTLC-funding tx can be fee-bumped. nLockTime is ZERO
+            // here, so this only adds RBF (no locktime effect).
+            sequence: Sequence(0xffff_fffd),
             witness: Witness::new(),
         })
         .collect();

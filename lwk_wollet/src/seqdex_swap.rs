@@ -375,9 +375,24 @@ impl Wollet {
 /// builder folds it into the (explicit) fee output instead. `rate == 0` is the
 /// native asset (1:1), giving the native 294-atom dust.
 fn dust_threshold(rate: u64) -> u64 {
+    convert_value_to_amount(294, rate)
+}
+
+/// The node's fee-market conversion `ExchangeRateMap::ConvertValueToAmount`:
+/// atoms of an asset whose published rate is `rate` (atoms per 1e8 native) that
+/// carry `value` native atoms of fee value — `ceil(value * 1e8 / rate)`.
+///
+/// `rate == 0` is treated as the native asset (1:1), which is correct for the
+/// dust threshold (the native asset legitimately values 1:1). CAUTION: for a
+/// NON-native asset, `rate == 0` means "not fee-accepted by producers" — callers
+/// that must distinguish that (e.g. the cross-chain SEQ-claim fee) MUST check
+/// `rate != 0` themselves rather than relying on the 1:1 fallback here.
+pub(crate) fn convert_value_to_amount(value: u64, rate: u64) -> u64 {
     const SCALE: u128 = 100_000_000;
-    let r = if rate == 0 { SCALE } else { rate as u128 };
-    ((294u128 * SCALE + r - 1) / r) as u64
+    if rate == 0 {
+        return value; // native 1:1
+    }
+    ((value as u128 * SCALE + rate as u128 - 1) / rate as u128) as u64
 }
 
 /// 8 random bytes as hex (16 chars), matching the daemon's `randstr.Hex(8)`.

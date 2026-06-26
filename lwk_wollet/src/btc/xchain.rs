@@ -47,7 +47,7 @@ fn hexdec(s: &str) -> Result<Vec<u8>, Error> {
 /// recorded in the persisted swap state so recovery derives the SAME key that
 /// funded the leg. The daemon does not enforce the path (it rebuilds scripts from
 /// the pubkeys the taker sends); the only constraint is claim==funding path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PathMode {
     /// Absolute `m/84'/1'/0'/{3,2}/0` (new swaps).
     Canonical,
@@ -730,6 +730,139 @@ struct SwapReq<'a> {
     swap_id: &'a str,
 }
 
+// --- persisted swap state + at-rest seal --------------------------------------
+//
+// The taker's wallet is the source of truth: the daemon's swap state is in-memory
+// and dies on restart, and there is no lookup-by-hash. So the full swap is
+// persisted (sealed) BEFORE any money moves and re-sealed after every transition.
+
+/// The step a cross-chain swap has reached. `SeqClaimed` is the point of no return
+/// (the preimage is public); before it the swap is still refundable via the BTC leg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum XStep {
+    /// Secret + keys generated, BTC HTLC built — nothing broadcast yet.
+    SecretReady,
+    /// The BTC funding tx is broadcast (in mempool).
+    BtcFunding,
+    /// The BTC funding is confirmed at `H_btc`.
+    BtcLocked,
+    /// The maker's SEQ leg is locked (proposed/accepted).
+    SeqLocked,
+    /// The SEQ leg passed the anchor + value-binding gates.
+    SeqVerified,
+    /// The taker revealed the preimage + claimed the SEQ leg (point of no return).
+    SeqClaimed,
+    /// The maker claimed the BTC leg with the revealed preimage (settled).
+    BtcClaimed,
+    /// The taker refunded the BTC leg via CLTV.
+    Refunded,
+    /// The swap failed/aborted.
+    Failed,
+}
+
+/// The maker's SEQ leg, in the persisted state (plain serde, distinct from the
+/// daemon-wire [`XSeqLeg`] whose ints are string-encoded).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XSeqLegState {
+    pub txid: String,
+    pub vout: u32,
+    pub block_hash: String,
+    pub anchor_height: i64,
+    pub redeem_script: String,
+    pub amount: u64,
+    pub asset_id: String,
+}
+
+impl From<&XSeqLeg> for XSeqLegState {
+    fn from(l: &XSeqLeg) -> Self {
+        Self {
+            txid: l.txid.clone(),
+            vout: l.vout,
+            block_hash: l.block_hash.clone(),
+            anchor_height: l.anchor_height,
+            redeem_script: l.redeem_script.clone(),
+            amount: l.amount,
+            asset_id: l.asset_id.clone(),
+        }
+    }
+}
+
+/// The full state of one cross-chain swap — everything needed to claim, refund, or
+/// recover it without the daemon. `secret_hex` is the non-HD preimage: it gates the
+/// BTC claim and is unrecoverable if lost, so this whole record is sealed at rest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XchainSwapState {
+    pub step: XStep,
+    pub seq_asset: String,
+    pub seq_amount: u64,
+    pub btc_amount: u64,
+    pub fee_btc: u64,
+    /// SEAL — the non-HD swap preimage (gates the BTC claim).
+    pub secret_hex: String,
+    pub hash_hex: String,
+    pub seq_claim_pub: String,
+    pub btc_refund_pub: String,
+    /// Which HD path funded the leg keys — recovery must derive the SAME key.
+    pub key_path: PathMode,
+    pub maker_btc_claim_pub: String,
+    pub maker_seq_refund_pub: String,
+    pub btc_locktime: u32,
+    pub seq_locktime: u32,
+    pub quote_id: String,
+    pub swap_id: String,
+    pub btc_redeem_script: String,
+    pub btc_p2sh_address: String,
+    pub btc_p2sh_spk_hex: String,
+    pub btc_funding_txid: Option<String>,
+    pub btc_vout: Option<u32>,
+    pub btc_height: Option<i64>,
+    pub seq_leg: Option<XSeqLegState>,
+    pub seq_claim_txid: Option<String>,
+    pub btc_refund_txid: Option<String>,
+}
+
+impl XchainSwapState {
+    /// Refundable iff the BTC leg was funded and the swap hasn't passed the point
+    /// of no return (or already settled/refunded).
+    pub fn refundable(&self) -> bool {
+        self.btc_funding_txid.is_some()
+            && !matches!(self.step, XStep::SeqClaimed | XStep::BtcClaimed | XStep::Refunded)
+    }
+}
+
+/// Seal a swap state under `passphrase` (age scrypt), returning base64. The
+/// plaintext (incl. the non-HD secret) must never hit disk nor cross an FFI/JS
+/// boundary unsealed; key `passphrase` off the wallet unlock.
+pub fn seal_state(state: &XchainSwapState, passphrase: &str) -> Result<String, Error> {
+    use base64::prelude::*;
+    use std::io::Write;
+
+    let json = serde_json::to_vec(state).map_err(map)?;
+    let recipient = age::scrypt::Recipient::new(age::secrecy::SecretString::from(passphrase.to_owned()));
+    let encryptor = age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient)).map_err(map)?;
+    let mut encrypted = vec![];
+    let mut writer = encryptor.wrap_output(&mut encrypted).map_err(map)?;
+    writer.write_all(&json).map_err(map)?;
+    writer.finish().map_err(map)?;
+    Ok(BASE64_STANDARD_NO_PAD.encode(encrypted))
+}
+
+/// Open a sealed swap state with `passphrase`.
+pub fn open_state(sealed: &str, passphrase: &str) -> Result<XchainSwapState, Error> {
+    use base64::prelude::*;
+    use std::io::Read;
+
+    let encrypted = BASE64_STANDARD_NO_PAD.decode(sealed).map_err(map)?;
+    let identity = age::scrypt::Identity::new(age::secrecy::SecretString::from(passphrase.to_owned()));
+    let mut reader = age::Decryptor::new(&encrypted[..])
+        .map_err(map)?
+        .decrypt(std::iter::once(&identity as &dyn age::Identity))
+        .map_err(map)?;
+    let mut json = vec![];
+    reader.read_to_end(&mut json).map_err(map)?;
+    serde_json::from_slice(&json).map_err(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,5 +941,50 @@ mod tests {
         let (_, legacy) = seq_claim_keypair(&p, m, PathMode::LegacyRelative).unwrap();
         assert_ne!(canon, legacy, "m/84'/1'/0'/3/0 and m/3/0 must derive different keys");
         assert_eq!(canon.len(), 66); // 33-byte compressed pubkey hex
+    }
+
+    fn sample_state() -> XchainSwapState {
+        XchainSwapState {
+            step: XStep::BtcLocked,
+            seq_asset: "gold".into(),
+            seq_amount: 172409,
+            btc_amount: 5000,
+            fee_btc: 50,
+            secret_hex: "11".repeat(32),
+            hash_hex: "22".repeat(32),
+            seq_claim_pub: "02aa".into(),
+            btc_refund_pub: "02bb".into(),
+            key_path: PathMode::Canonical,
+            maker_btc_claim_pub: "02cc".into(),
+            maker_seq_refund_pub: "02dd".into(),
+            btc_locktime: 900000,
+            seq_locktime: 12345,
+            quote_id: "q1".into(),
+            swap_id: "s1".into(),
+            btc_redeem_script: "63a8".into(),
+            btc_p2sh_address: "2N...".into(),
+            btc_p2sh_spk_hex: "a914".into(),
+            btc_funding_txid: Some("ff".repeat(32)),
+            btc_vout: Some(1),
+            btc_height: Some(800000),
+            seq_leg: None,
+            seq_claim_txid: None,
+            btc_refund_txid: None,
+        }
+    }
+
+    // The non-HD secret must round-trip through the at-rest seal and never appear
+    // in the sealed blob; a wrong passphrase must fail.
+    #[test]
+    fn seal_roundtrips_and_hides_the_secret() {
+        let st = sample_state();
+        let sealed = seal_state(&st, "unlock-pass").unwrap();
+        assert!(!sealed.contains(&st.secret_hex), "the secret must not appear in the sealed blob");
+        let opened = open_state(&sealed, "unlock-pass").unwrap();
+        assert_eq!(opened.secret_hex, st.secret_hex);
+        assert_eq!(opened.swap_id, "s1");
+        assert_eq!(opened.key_path, PathMode::Canonical);
+        assert!(opened.refundable()); // funded + not past the point of no return
+        assert!(open_state(&sealed, "wrong-pass").is_err());
     }
 }

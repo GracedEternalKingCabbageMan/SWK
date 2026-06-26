@@ -141,11 +141,13 @@ sequentia = ["elements/sequentia"]
 # builder (seqdex_htlc, sequentia-gated) — which the BTC leg wraps, so the legs
 # stay byte-identical. A dual-chain kit is always Sequentia anyway.
 btc = ["bitcoin", "sequentia"]
-btc-async = ["btc", "reqwest"]
-# Both transports derive the parent-chain keychain directly (bip39 + bitcoin::bip32,
-# byte-identical to SwSigner), so neither pulls lwk_signer — keeping the wasm
-# (btc-async) build free of lwk_wollet's jade/ledger-forced signer dep.
-btc-blocking = ["btc", "reqwest"]
+# `age` seals the cross-chain swap state at rest (the non-HD secret must never hit
+# disk unencrypted); it rides only on `esplora` otherwise, so the btc transports
+# pull it explicitly. Both transports derive the parent-chain keychain directly
+# (bip39 + bitcoin::bip32, byte-identical to SwSigner), so neither pulls lwk_signer
+# — keeping the wasm (btc-async) build free of lwk_wollet's jade/ledger signer dep.
+btc-async = ["btc", "reqwest", "age"]
+btc-blocking = ["btc", "reqwest", "age"]
 amp2 = ["reqwest"]
 amp0 = [
     "tokio-tungstenite",

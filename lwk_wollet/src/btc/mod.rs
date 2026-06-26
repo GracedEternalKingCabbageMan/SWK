@@ -32,6 +32,11 @@ mod esplora;
 #[cfg(any(feature = "btc-blocking", feature = "btc-async"))]
 pub use core::{address, BtcPrepared, BtcScan, HtlcFunding, DEFAULT_FEERATE};
 
+// Cross-chain (BTC <-> Sequentia-asset) HTLC swap glue: the reveal/anchor gate,
+// SEQ-claim key derivation + claim, transport-split like esplora.
+#[cfg(any(feature = "btc-blocking", feature = "btc-async"))]
+pub mod xchain;
+
 #[cfg(all(feature = "btc-blocking", not(target_arch = "wasm32")))]
 pub mod wallet;
 #[cfg(feature = "btc-async")]

@@ -142,10 +142,10 @@ sequentia = ["elements/sequentia"]
 # stay byte-identical. A dual-chain kit is always Sequentia anyway.
 btc = ["bitcoin", "sequentia"]
 btc-async = ["btc", "reqwest"]
-# The native blocking path derives the parent-chain keychain through the same
-# SwSigner lwk uses for the Sequentia side (guaranteeing the shared address), so
-# it pulls lwk_signer. The wasm/async path wires derivation differently (Phase 1).
-btc-blocking = ["btc", "reqwest", "lwk_signer"]
+# Both transports derive the parent-chain keychain directly (bip39 + bitcoin::bip32,
+# byte-identical to SwSigner), so neither pulls lwk_signer — keeping the wasm
+# (btc-async) build free of lwk_wollet's jade/ledger-forced signer dep.
+btc-blocking = ["btc", "reqwest"]
 amp2 = ["reqwest"]
 amp0 = [
     "tokio-tungstenite",

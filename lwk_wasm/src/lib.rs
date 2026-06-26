@@ -12,6 +12,7 @@ mod bip;
 mod blockdata;
 mod boltz;
 mod btc_wallet;
+mod xchain;
 mod contract;
 #[cfg(feature = "simplicity")]
 mod control_block;
@@ -71,6 +72,7 @@ pub use amp2::{Amp2, Amp2Descriptor};
 pub use balance::Balance;
 pub use bip::Bip;
 pub use btc_wallet::{BtcPrepared, BtcScan, BtcWallet};
+pub use xchain::XchainSwap;
 pub use blockdata::address::{Address, AddressResult};
 #[cfg(feature = "simplicity")]
 pub use blockdata::asset_id::{

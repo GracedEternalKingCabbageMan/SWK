@@ -154,8 +154,12 @@ impl Wollet {
     /// - `asset_r` / `amount_r`: the asset and amount the taker receives.
     /// - `receive_address`: the taker's own confidential address that receives
     ///   `asset_r` and any `asset_p` change.
-    /// - `fee_asset` / `fee_amount`: the fee; folded into the funded `asset_p`
-    ///   amount when `fee_asset == asset_p`.
+    /// - `fee_asset` / `fee_amount` / `fee_rate`: the open-fee-market network fee.
+    ///   `fee_amount == 0` ⇒ maker-funds the fee in `asset_r` (default). Otherwise
+    ///   the taker funds the fee in `fee_asset` (any held, fee-eligible asset
+    ///   except `asset_r`), adding a fee input + explicit fee output; `fee_rate`
+    ///   is `fee_asset`'s published rate (atoms per 1e8 native), used only for the
+    ///   dust threshold.
     ///
     /// Returns a [`SwapRequest`] carrying the unsigned/unblinded PSETv2 + the
     /// revealed `unblinded_inputs`. POST it to the daemon's `ProposeTrade`
@@ -178,6 +182,7 @@ impl Wollet {
         receive_address: &Address,
         fee_asset: &AssetId,
         fee_amount: u64,
+        fee_rate: u64,
     ) -> Result<SwapRequest, Error> {
         let opts = SeqdexSwapRequestOpts {
             asset_p: (*asset_p).into(),
@@ -187,6 +192,7 @@ impl Wollet {
             receive_address: receive_address.into(),
             fee_asset: (*fee_asset).into(),
             fee_amount,
+            fee_rate,
         };
         Ok(self.inner().seqdex_swap_request(&opts)?.into())
     }

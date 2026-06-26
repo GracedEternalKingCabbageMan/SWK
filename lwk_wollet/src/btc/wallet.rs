@@ -15,16 +15,16 @@
 
 use std::str::FromStr;
 
-use lwk_signer::SwSigner;
+use bip39::Mnemonic;
 
-use crate::bitcoin::bip32::DerivationPath;
+use crate::bitcoin::bip32::{DerivationPath, Xpriv};
 use crate::bitcoin::consensus::encode::serialize_hex;
 use crate::bitcoin::hashes::Hash;
 use crate::bitcoin::secp256k1::{All, Message, Secp256k1, SecretKey};
 use crate::bitcoin::sighash::SighashCache;
 use crate::bitcoin::{
-    absolute::LockTime, transaction::Version, Address, Amount, CompressedPublicKey, EcdsaSighashType, OutPoint,
-    ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    absolute::LockTime, transaction::Version, Address, Amount, CompressedPublicKey, EcdsaSighashType,
+    Network as BtcNetwork, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
 };
 
 use super::addr::ChainAddressParams;
@@ -55,15 +55,25 @@ struct Key {
     script: ScriptBuf,
 }
 
-fn signer(mnemonic: &str) -> Result<SwSigner, Error> {
-    // `is_mainnet = false` -> testnet seed + the same `m/84'/1'/0'` keychain lwk uses.
-    SwSigner::new(mnemonic, false).map_err(map)
+/// Derive the BIP32 master xprv from the recovery phrase, byte-for-byte as lwk's
+/// `SwSigner::new(mnemonic, is_mainnet)` does it (BIP39 seed with an empty
+/// passphrase, then `Xpriv::new_master`). Deriving here directly (no signer crate)
+/// keeps the btc module cross-platform — the same code derives on native and on
+/// wasm, where lwk_wollet's `lwk_signer` dep would otherwise force jade/ledger.
+/// The Bitcoin network only sets the xprv's version bytes; the derived child keys
+/// (and thus the shared address) are network-independent — the
+/// `tb1_matches_lwk_unconfidential` test guards the byte-match against SwSigner.
+fn master_xprv(mnemonic: &str, params: &ChainAddressParams) -> Result<Xpriv, Error> {
+    let mnemonic: Mnemonic = mnemonic.parse().map_err(map)?;
+    let seed = mnemonic.to_seed("");
+    let network = if params.coin_type == 0 { BtcNetwork::Bitcoin } else { BtcNetwork::Testnet };
+    Xpriv::new_master(network, &seed).map_err(map)
 }
 
-fn derive(secp: &Secp256k1<All>, signer: &SwSigner, params: &ChainAddressParams, internal: bool, i: u32) -> Result<Key, Error> {
+fn derive(secp: &Secp256k1<All>, master: &Xpriv, params: &ChainAddressParams, internal: bool, i: u32) -> Result<Key, Error> {
     let path =
         DerivationPath::from_str(&format!("m/84h/{}h/0h/{}/{}", params.coin_type, internal as u8, i)).map_err(map)?;
-    let xprv = signer.derive_xprv(&path).map_err(map)?;
+    let xprv = master.derive_priv(secp, &path).map_err(map)?;
     let sk = xprv.private_key;
     let pk = CompressedPublicKey(sk.public_key(secp));
     let address = Address::p2wpkh(&pk, params.hrp);
@@ -75,7 +85,7 @@ fn derive(secp: &Secp256k1<All>, signer: &SwSigner, params: &ChainAddressParams,
 /// BTC-specific receive flow. (Normal receive reuses the shared address.)
 pub fn address(params: &ChainAddressParams, mnemonic: &str, internal: bool, i: u32) -> Result<String, Error> {
     let secp = Secp256k1::new();
-    Ok(derive(&secp, &signer(mnemonic)?, params, internal, i)?.address.to_string())
+    Ok(derive(&secp, &master_xprv(mnemonic, params)?, params, internal, i)?.address.to_string())
 }
 
 // --- scan -> balance ----------------------------------------------------------
@@ -97,7 +107,7 @@ pub struct BtcScan {
 /// still found. Balance = funded − spent across chain + mempool stats.
 pub fn scan(params: &ChainAddressParams, mnemonic: &str, t4_api: &str) -> Result<BtcScan, Error> {
     let secp = Secp256k1::new();
-    let signer = signer(mnemonic)?;
+    let master = master_xprv(mnemonic, params)?;
     let client = client()?;
     let base = t4_api.trim_end_matches('/');
 
@@ -113,7 +123,7 @@ pub fn scan(params: &ChainAddressParams, mnemonic: &str, t4_api: &str) -> Result
         for i in start..start + GAP {
             for internal in [false, true] {
                 slots.push((internal, i));
-                addrs.push(derive(&secp, &signer, params, internal, i)?.address.to_string());
+                addrs.push(derive(&secp, &master, params, internal, i)?.address.to_string());
             }
         }
         let infos = par_fetch(&client, base, &addrs, addr_info);
@@ -161,7 +171,7 @@ struct Utxo {
 /// Spendable UTXOs across the scanned window (both chains), each carrying its key.
 fn gather_utxos(
     secp: &Secp256k1<All>,
-    signer: &SwSigner,
+    master: &Xpriv,
     params: &ChainAddressParams,
     client: &reqwest::blocking::Client,
     base: &str,
@@ -172,7 +182,7 @@ fn gather_utxos(
     let mut keys: Vec<Key> = Vec::with_capacity((lim as usize) * 2);
     for internal in [false, true] {
         for i in 0..lim {
-            keys.push(derive(secp, signer, params, internal, i)?);
+            keys.push(derive(secp, master, params, internal, i)?);
         }
     }
     let addrs: Vec<String> = keys.iter().map(|k| k.address.to_string()).collect();
@@ -229,7 +239,7 @@ pub fn prepare(
     }
     let fee_rate = if fee_rate > 0.0 { fee_rate } else { DEFAULT_FEERATE };
     let secp = Secp256k1::new();
-    let signer = signer(mnemonic)?;
+    let master = master_xprv(mnemonic, params)?;
     let client = client()?;
     let base = t4_api.trim_end_matches('/');
 
@@ -239,7 +249,7 @@ pub fn prepare(
         .map_err(|_| Error::Generic("address is not a Bitcoin testnet (tb1) address".into()))?;
 
     let scan = scan(params, mnemonic, base)?;
-    let mut utxos = gather_utxos(&secp, &signer, params, &client, base, scan.scan_limit, scan.change_next)?;
+    let mut utxos = gather_utxos(&secp, &master, params, &client, base, scan.scan_limit, scan.change_next)?;
     if utxos.is_empty() {
         return Err(Error::Generic("no spendable BTC; the testnet4 balance is empty".into()));
     }
@@ -288,7 +298,7 @@ pub fn prepare(
 
     let mut output = vec![TxOut { value: Amount::from_sat(amount_sats), script_pubkey: dest.script_pubkey() }];
     if with_change {
-        let change_spk = derive(&secp, &signer, params, true, scan.change_next)?.script;
+        let change_spk = derive(&secp, &master, params, true, scan.change_next)?.script;
         output.push(TxOut { value: Amount::from_sat(change), script_pubkey: change_spk });
     }
 
@@ -399,6 +409,9 @@ pub fn find_htlc_funding(t4_api: &str, txid: &str, p2sh_spk_hex: &str) -> Result
 mod tests {
     use super::*;
     use lwk_common::{singlesig_desc, DescriptorBlindingKey, Network, Singlesig};
+    // SwSigner (a dev-dependency) builds the reference lwk wallet whose
+    // unconfidential address the directly-derived BTC address must byte-match.
+    use lwk_signer::SwSigner;
 
     // The whole point of the dual-chain design: the Bitcoin address derived here
     // must be byte-identical to the lwk Sequentia wallet's unconfidential address

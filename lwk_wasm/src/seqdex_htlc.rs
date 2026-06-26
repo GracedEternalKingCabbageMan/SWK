@@ -42,7 +42,7 @@ struct SwapSecretJson {
 /// Generate a fresh 32-byte swap secret `s` and its `H = sha256(s)`.
 ///
 /// Returns `{ secret_hex, hash_hex }`. The taker hands `hash_hex` (H) to the daemon
-/// (BTC-leg lock + `ProposeXchainSwap`) and keeps `secret_hex` (s) to claim the SEQ
+/// (BTC-leg lock + `ProposeXchainSwap`) and keeps `secret_hex` (s) to claim the Sequentia
 /// leg. Mirrors the Go taker's `rand.Read(secret)` + `sha256.Sum256`.
 #[wasm_bindgen(js_name = generateSwapSecret)]
 pub fn generate_swap_secret_js() -> Result<JsValue, Error> {
@@ -66,11 +66,11 @@ struct HtlcKeypairJson {
 
 #[wasm_bindgen]
 impl Signer {
-    /// Derive the taker's dedicated SEQ cross-chain HTLC claim keypair at m/3/0.
+    /// Derive the taker's dedicated Sequentia cross-chain HTLC claim keypair at m/3/0.
     ///
     /// Deterministic and recoverable from the wallet seed (distinct from staking's
     /// m/2/0). Returns `{ public_key, secret_hex }`: give `public_key` to the daemon
-    /// as the SEQ claim pubkey in `ProposeXchainSwap`, and pass `secret_hex` to
+    /// as the Sequentia claim pubkey in `ProposeXchainSwap`, and pass `secret_hex` to
     /// [`buildSeqHtlcClaimTx`] to sign the claim. The matching BTC-refund pubkey the
     /// daemon also needs is produced by the wallet's BTC side (`btc.js`).
     #[wasm_bindgen(js_name = htlcKeypair)]
@@ -97,11 +97,11 @@ impl Signer {
     }
 }
 
-/// Build the Design-A HTLC redeemScript for the SEQ leg.
+/// Build the Design-A HTLC redeemScript for the Sequentia leg.
 ///
 /// `hash` is `H` (hex), `claim_pub` / `refund_pub` are 33-byte compressed pubkeys
 /// (hex), `locktime` the CLTV value. Returns the redeemScript as hex. Byte-identical
-/// to the daemon's `LockScript`, so the browser can independently verify the SEQ leg
+/// to the daemon's `LockScript`, so the browser can independently verify the Sequentia leg
 /// the daemon locked.
 #[wasm_bindgen(js_name = buildSeqHtlcRedeemScript)]
 pub fn build_seq_htlc_redeem_script(
@@ -117,7 +117,7 @@ pub fn build_seq_htlc_redeem_script(
     Ok(hex_of(script.as_bytes()))
 }
 
-/// The SEQ HTLC output a claim/refund spends, as a JS object.
+/// The Sequentia HTLC output a claim/refund spends, as a JS object.
 ///
 /// JS shape:
 /// `{ txid, vout, amount, asset_id, dest_spk (hex scriptPubKey), fee }`.
@@ -147,10 +147,10 @@ fn parse_spend(spend: JsValue) -> Result<SeqHtlcSpend, Error> {
 
 /// Build the signed Sequentia-leg **claim** (IF/redeem branch) tx, revealing the preimage.
 ///
-/// - `spend`: `{ txid, vout, amount, asset_id, dest_spk, fee }` of the SEQ HTLC the
+/// - `spend`: `{ txid, vout, amount, asset_id, dest_spk, fee }` of the Sequentia HTLC the
 ///   daemon locked (from the `ProposeXchainSwap` accept's `seq_leg`).
 /// - `redeem_script`: the HTLC redeemScript hex (from [`buildSeqHtlcRedeemScript`]).
-/// - `claim_secret`: the taker's SEQ-claim private scalar hex (from
+/// - `claim_secret`: the taker's Sequentia-claim private scalar hex (from
 ///   [`Signer::htlcKeypair`]).
 /// - `preimage`: the 32-byte swap secret `s` hex (from [`generateSwapSecret`]).
 ///
@@ -175,7 +175,7 @@ pub fn build_seq_htlc_claim_tx(
 /// reaches `locktime`.
 ///
 /// `refund_secret` is the scalar (hex) of the refund key embedded in the script.
-/// Built for symmetry/completeness; in the MVP the SEQ refund is the maker's.
+/// Built for symmetry/completeness; in the MVP the Sequentia refund is the maker's.
 #[wasm_bindgen(js_name = buildSeqHtlcRefundTx)]
 pub fn build_seq_htlc_refund_tx(
     spend: JsValue,

@@ -2,8 +2,14 @@
 
 SWK is a fork of [Blockstream LWK](https://github.com/Blockstream/lwk) (Liquid
 Wallet Kit) adapted to **Sequentia** — an Elements-based, Proof-of-Stake,
-Bitcoin-anchored chain. It is a watch-only wallet toolkit (descriptors, scanning,
-balances, PSET) that talks to a Sequentia esplora/electrum backend.
+Bitcoin-anchored chain. It is the toolkit for building **standard Sequentia
+wallets**, which are always **dual-chain: a Bitcoin parent-chain (testnet4) wallet
+plus Sequentia, with no exception**; the same BIP84 keys yield the shared
+Bitcoin-format (`tb1…`) addresses valid on both chains. The kit (descriptors,
+scanning, balances, PSET) currently implements the Sequentia (Elements) side
+against a Sequentia esplora/electrum backend; the Bitcoin parent-chain side
+(testnet4 watching, BTC balance and send, cross-chain swaps) is the roadmap to a
+complete dual-chain kit.
 
 This branch (`sequentia`) tracks upstream LWK via the `upstream` git remote;
 Sequentia changes are kept as small, additive commits so upstream updates can be
@@ -50,8 +56,9 @@ cargo run -p lwk_wollet --example sequentia_sync
 self-contained, Sequentia-branded browser wallet on top of it: create/import a
 12-word mnemonic, derive non-confidential, Bitcoin-format receive addresses
 (`tb1…`; confidentiality is opt-in on Sequentia), sync against a Sequentia
-esplora at `<origin>/api`, and show the tSEQ balance — all client-side, keys
-never leaving the browser.
+esplora at `<origin>/api`, and show asset balances — all client-side, keys
+never leaving the browser. (The Bitcoin parent-chain side is not in this demo yet;
+see the roadmap.)
 
 ```
 cd lwk_wasm && wasm-pack build --target web --release      # needs clang
@@ -68,5 +75,6 @@ A public instance runs alongside the Sequentia explorer.
 - [x] `nDenomination` issuance byte (issuance-tx serialization delta)
 - [x] WASM build + browser wallet (create/import, receive, balance)
 - [ ] Send / PSET signing in the browser wallet
+- [ ] **Bitcoin parent-chain (testnet4) side**: watching, BTC balance/send, and cross-chain swaps — the dual-chain half every standard Sequentia wallet needs
 - [ ] Confidential-tx review for the testnet's non-confidential outputs
 - [ ] Wider SWK branding (crate names stay `lwk_*` for upstream tracking)

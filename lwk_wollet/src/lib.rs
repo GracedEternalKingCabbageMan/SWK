@@ -116,6 +116,10 @@ pub mod registry;
 mod seqdex_htlc;
 #[cfg(feature = "sequentia")]
 mod seqdex_swap;
+// SEQUENTIA dual-chain: the Bitcoin parent-chain wallet + HTLC leg, so every
+// standard Sequentia wallet is Bitcoin + Sequentia from one seed (shared address).
+#[cfg(feature = "btc")]
+pub mod btc;
 mod tx_builder;
 mod update;
 mod util;

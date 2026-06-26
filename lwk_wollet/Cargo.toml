@@ -36,6 +36,12 @@ elements26 = { package = "elements", version = "0.26.2", features = ["base64"] }
 base64 = "0.21.4"
 bitcoincore-rpc = { version = "0.19.0", optional = true }
 futures = "0.3"
+# SEQUENTIA dual-chain (feature `btc`): the Bitcoin parent-chain crate, pinned in
+# the workspace to the exact transitive elements-miniscript version. Optional so
+# bitcoin stays purely transitive when `btc` is off; using it directly under the
+# feature lets the kit build/sign Bitcoin txs. Code uses the existing re-export
+# `crate::bitcoin`, which unifies to this same crate.
+bitcoin = { workspace = true, optional = true }
 
 reqwest = { version = "0.12", optional = true, default-features = false, features = [
     "charset",
@@ -125,6 +131,21 @@ test_wallet = ["lwk_signer"]
 # Sequentia: treat explicit (non-confidential) outputs as first-class wallet
 # funds (balance, coin selection, history). Requires elements' sequentia feature.
 sequentia = ["elements/sequentia"]
+# SEQUENTIA dual-chain: bring the Bitcoin parent-chain wallet + HTLC leg into the
+# kit, so every standard Sequentia wallet is Bitcoin + Sequentia. `btc` is the
+# I/O-free core (keys, address model, tx build/sign, redeemScript); the esplora
+# transport is split so wasm uses async and Ambra uses blocking. `btc-blocking`
+# must NEVER be unified into a wasm build (reqwest::blocking is absent there); a
+# compile_error! guard in the module enforces that.
+# `btc` implies `sequentia`: the HTLC redeemScript has ONE source — the SEQ-leg
+# builder (seqdex_htlc, sequentia-gated) — which the BTC leg wraps, so the legs
+# stay byte-identical. A dual-chain kit is always Sequentia anyway.
+btc = ["bitcoin", "sequentia"]
+btc-async = ["btc", "reqwest"]
+# The native blocking path derives the parent-chain keychain through the same
+# SwSigner lwk uses for the Sequentia side (guaranteeing the shared address), so
+# it pulls lwk_signer. The wasm/async path wires derivation differently (Phase 1).
+btc-blocking = ["btc", "reqwest", "lwk_signer"]
 amp2 = ["reqwest"]
 amp0 = [
     "tokio-tungstenite",

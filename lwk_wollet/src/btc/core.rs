@@ -419,4 +419,43 @@ mod tests {
 
         assert_eq!(btc0, lwk0, "Bitcoin and Sequentia-unconfidential addresses must match");
     }
+
+    // Phase 1's parity property: the blocking and async drivers both call this
+    // `build_signed_tx`, so as long as it is deterministic for a given input it is
+    // byte-identical across transports. Construct a fixed UTXO set and confirm the
+    // build is well-formed AND reproducible bit-for-bit (no nonce/order leak).
+    #[test]
+    fn build_signed_tx_is_deterministic_and_well_formed() {
+        use crate::bitcoin::{OutPoint, Txid};
+        use std::str::FromStr;
+
+        let params = ChainAddressParams::testnet();
+        let secp = Secp256k1::new();
+        let master = master_xprv(MNEMONIC, &params).unwrap();
+        // A real key (external/0) so the BIP143 signature is valid; pay to ourselves.
+        let k = derive(&secp, &master, &params, false, 0).unwrap();
+        let dest = k.address.to_string();
+
+        let utxos = |n: u32| -> Vec<Utxo> {
+            (0..n)
+                .map(|vout| Utxo {
+                    outpoint: OutPoint { txid: Txid::from_str(&"11".repeat(32)).unwrap(), vout },
+                    value: 100_000,
+                    script: k.script.clone(),
+                    sk: k.sk,
+                    pk: k.pk,
+                })
+                .collect()
+        };
+
+        let a = build_signed_tx(&secp, &master, &params, &dest, 150_000, 2.0, 1, utxos(2)).unwrap();
+        let b = build_signed_tx(&secp, &master, &params, &dest, 150_000, 2.0, 1, utxos(2)).unwrap();
+
+        assert_eq!(a.hex, b.hex, "build must be deterministic -> blocking and async are byte-identical");
+        assert_eq!(a.txid, b.txid);
+        assert_eq!(a.inputs, 2); // 2x100k needed to cover 150k + fee
+        assert!(a.fee_sats > 0);
+        // Spend 200k: 150k to dest + change − fee, so a change output exists.
+        assert!(!a.hex.is_empty());
+    }
 }

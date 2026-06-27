@@ -212,6 +212,21 @@ impl Wollet {
                     break;
                 }
                 let idx = self.add_input(pset, inp_txout_sec, inp_weight, utxo, true)?;
+                // An explicit (unconfidential) input carries its asset+value in the
+                // witness_utxo; lwk also sets the PSET explicit-asset/value fields, but
+                // go-elements (the maker's parser) REQUIRES a matching asset/value proof
+                // whenever those are present — which an unconfidential input has no
+                // commitment to prove. Drop them on explicit inputs (no proof) so the swap
+                // PSET parses; the maker reads the input from the witness_utxo + the
+                // revealed unblinded_inputs. Confidential inputs keep their fields+proofs.
+                if let Some(inp) = pset.inputs_mut().get_mut(idx) {
+                    if inp.blind_value_proof.is_none() {
+                        inp.amount = None;
+                    }
+                    if inp.blind_asset_proof.is_none() {
+                        inp.asset = None;
+                    }
+                }
                 let secrets = &utxo.unblinded;
                 unblinded_inputs.push(SeqdexUnblindedInput {
                     index: idx as u32,

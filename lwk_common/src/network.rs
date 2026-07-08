@@ -167,7 +167,7 @@ impl Network {
         )
         .expect("valid Sequentia policy asset id");
         let genesis_hash = BlockHash::from_str(
-            "c2a0a99b4c307e8423b98140af1f539aa4e1feec25c62d655d91d8df51c7dfba",
+            "ddd11d54c87a2bd94400fd31ce05d8e1110bb4b78e7103f738342086fc4ea92e",
         )
         .expect("valid Sequentia genesis hash");
         Network::CustomElements(
@@ -295,7 +295,7 @@ mod tests {
         );
         assert_eq!(
             n.genesis_hash().to_string(),
-            "c2a0a99b4c307e8423b98140af1f539aa4e1feec25c62d655d91d8df51c7dfba"
+            "ddd11d54c87a2bd94400fd31ce05d8e1110bb4b78e7103f738342086fc4ea92e"
         );
         // address params are Sequentia's, not the generic Elements defaults
         let p = n.address_params();

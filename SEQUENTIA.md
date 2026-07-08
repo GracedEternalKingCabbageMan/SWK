@@ -65,13 +65,11 @@ its `sequentia` cargo feature:
     network with the policy asset (the Sequence token, tSEQ:
     `c8eccacf0953e1931cd31e434d8319101cc36e6c38b0e2104d8687552fae3e40`), the
     Sequentia address params, and the name `sequentia-testnet`.
-  - Known issue: the genesis-hash constant in `sequentia_testnet()`
-    (`c2a0a99b...`) predates the 2026-07-05 testnet re-genesis (current genesis
-    `ddd11d54...`). The policy-asset id was preserved across the re-genesis and
-    is correct. Inside LWK the network genesis hash is only used for BIP341
-    (taproot) sighash computation, which none of the Sequentia flows use
-    (wallets are wpkh/ECDSA), so sync, send, swaps, and staking are unaffected;
-    the constant still needs updating before any taproot use.
+  - The genesis-hash constant in `sequentia_testnet()` is the current
+    2026-07-05 re-genesis hash (`ddd11d54...`). The policy-asset id was
+    preserved across the re-genesis. Inside LWK the network genesis hash is
+    used for BIP341 (taproot) sighash computation (e.g. the SeqOB covenant
+    flows), so it must track the live chain.
 
 ## `lwk_wollet`
 

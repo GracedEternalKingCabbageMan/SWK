@@ -2819,6 +2819,7 @@ dependencies = [
  "age",
  "base64 0.21.7",
  "bip39",
+ "bitcoin",
  "bitcoincore-rpc",
  "cbc",
  "criterion",

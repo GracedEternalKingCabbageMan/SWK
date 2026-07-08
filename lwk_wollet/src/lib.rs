@@ -115,6 +115,8 @@ pub mod registry;
 #[cfg(feature = "sequentia")]
 mod seqdex_htlc;
 #[cfg(feature = "sequentia")]
+mod seqob_covenant;
+#[cfg(feature = "sequentia")]
 mod seqdex_swap;
 // SEQUENTIA dual-chain: the Bitcoin parent-chain wallet + HTLC leg, so every
 // standard Sequentia wallet is Bitcoin + Sequentia from one seed (shared address).
@@ -154,6 +156,11 @@ pub use crate::tx_builder::sequentia_stake_script;
 pub use crate::seqdex_htlc::{
     build_claim_tx, build_htlc_redeem_script, build_refund_tx, generate_swap_secret,
     pubkey_for_secret, secret_from_hex, SeqHtlcSpend, SwapSecret,
+};
+#[cfg(feature = "sequentia")]
+pub use crate::seqob_covenant::{
+    build_covenant_fill_tx, covenant_secret_from_hex, maker_payout_program, CovenantFillPlan,
+    CovenantInput, FillCredit, FillRemainder, TakerFundingInput,
 };
 #[cfg(feature = "sequentia")]
 pub use crate::seqdex_swap::{SeqdexSwapRequest, SeqdexSwapRequestOpts, SeqdexUnblindedInput};

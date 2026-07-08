@@ -1,10 +1,16 @@
 # CLI
 
+> **Sequentia note (SWK fork).** `lwk_cli` is unmodified upstream LWK: its
+> `--network` selector only offers the Liquid networks (mainnet, testnet,
+> regtest); there is no Sequentia network option yet. Use the Rust library
+> (`lwk_wollet` with the `sequentia` feature) or the WASM bindings for
+> Sequentia wallets. See [SEQUENTIA.md](../SEQUENTIA.md).
+
 Building the needed executable requires [rust](https://www.rust-lang.org/tools/install):
 
 ```sh
-$ git clone git@github.com:Blockstream/lwk.git
-$ cd lwk
+$ git clone https://github.com/GracedEternalKingCabbageMan/SWK.git
+$ cd SWK
 $ cargo install --path ./lwk_cli
 ```
 

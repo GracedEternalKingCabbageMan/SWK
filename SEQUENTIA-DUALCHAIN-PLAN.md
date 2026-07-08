@@ -1,5 +1,60 @@
 # SWK dual-chain plan: bring the Bitcoin parent-chain into the kit
 
+> **STATUS (2026-07-08): HISTORICAL PLAN. The dual-chain work is implemented.**
+> This document is kept as design history; the text below is the plan as
+> approved, not a description of the current code. What actually happened,
+> verified against the `sequentia` branch:
+>
+> **Built as planned**
+> - The `btc` / `btc-async` / `btc-blocking` feature-gated module in
+>   `lwk_wollet/src/btc/` (no new crate), with the blocking+async transports
+>   over one I/O-free core, the wasm32 `compile_error!` guard, and
+>   `bitcoin = "=0.32.7"` pinned in the workspace (Phases 0-1).
+> - `ChainAddressParams` in `lwk_wollet/src/btc/addr.rs` with the hardcoded
+>   Bitcoin network and shared `(coin_type, HRP)` per network; `isSequentia()`
+>   on the wasm `Network`.
+> - The single chain-agnostic redeemScript source (the Sequentia-leg builder in
+>   `lwk_wollet/src/seqdex_htlc.rs`, which the BTC leg wraps), plus
+>   blocking-vs-async build determinism locked by a parity test.
+> - Phase 4 cross-chain glue in `lwk_wollet/src/btc/xchain.rs` and
+>   `lwk_wasm/src/xchain.rs`: the self-verifying anchor gate (safety
+>   requirement 1), persist-before-fund with age-encrypted `XchainSwapState`
+>   (requirements 4 and 9), the rate-derived any-asset Sequentia-claim fee
+>   (closed decision kept), BIP125 RBF + `/fee-estimates` fees, crash-recovery
+>   path modes (canonical deep HTLC paths with a recorded legacy `m/3/0` mode),
+>   and a claim-deadline gate (requirement 8). Live-validated read-only against
+>   the running testnet infrastructure (ignored integration test).
+> - Ambra consumes the kit's `btc-blocking` feature (Phase 2 cutover happened
+>   in the ambra repository).
+>
+> **Deviations from the plan**
+> - Safety requirements 2 and 3 (value-scaled BTC reorg buffer, wall-clock
+>   timelock comparison) were deliberately superseded: Sequentia follows
+>   Bitcoin reorgs in real time, so the Sequentia leg's finality IS its anchor
+>   block's Bitcoin finality. The shipped reveal gate requires anchor height at
+>   or above the BTC funding height, `anchorstatus` ok, and a taker-chosen
+>   anchor confirmation depth (default 1); the CLTV timelocks are liveness
+>   only. See `lwk_wollet/src/btc/xchain.rs`.
+> - No `SwSigner::sign_btc_psbt`: the btc module derives its BIP84 keychain
+>   directly (bip39 + bip32, byte-identical results) and does not depend on
+>   `lwk_signer`, keeping the wasm build free of the jade/ledger deps.
+> - No `DualChainWallet` wasm type: the wasm surface is `BtcWallet` +
+>   `XchainSwap` alongside the existing `Wollet`, and consumers compose them.
+>
+> **Not built (still open)**
+> - Phase 5 entirely: hardware-signer BTC routing, CPFP rescue for the BTC
+>   side, mainnet wiring (there is no Sequentia mainnet; the inherited Liquid
+>   coin_type `1776` in `lwk_common` (`signer.rs`, `descriptor.rs`) is still
+>   unfixed, though `ChainAddressParams::mainnet()` already uses coin_type 0).
+> - The full claim/refund golden-vector suite regenerated from a running
+>   daemon (requirement 6) beyond the redeemScript and determinism parity
+>   tests that do exist.
+>
+> For the current architecture, read [SEQUENTIA.md](SEQUENTIA.md) and the
+> module docs in `lwk_wollet/src/btc/`.
+
+Original plan text follows.
+
 Status: approved plan, ready to implement. This consolidates the Bitcoin parent-chain
 side into SWK so the kit builds standard dual-chain wallets directly, replacing the two
 current per-wallet reimplementations (Ambra's `ambra_core` Rust, and the web wallet's

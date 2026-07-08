@@ -1,6 +1,15 @@
 
 ## Bindings
 
+> **Sequentia note (SWK fork).** This crate is unmodified upstream LWK: the
+> UniFFI surface does not expose the Sequentia network, the transparent-first
+> wallet behavior, or the Bitcoin parent-chain (`btc`) module yet, and it builds
+> `lwk_wollet` with default features (no `sequentia`). Native consumers that
+> need Sequentia support depend on the Rust crates directly instead, the way
+> [Ambra](https://github.com/GracedEternalKingCabbageMan/ambra)'s `ambra_core`
+> uses `lwk_wollet` with features `sequentia`, `esplora`, `btc-blocking`.
+> See [SEQUENTIA.md](../SEQUENTIA.md).
+
 To generate bindings the projects use [Mozilla uniffi](https://mozilla.github.io/uniffi-rs/) giving support for: Kotlin, Swift, Python, Ruby and also third party support for Kotlin multiplatform, Go, C++, C# and Dart.
 
 There is an architectural refactor already planned for the crates the bindings are created on, this initial version is for experimentation only,

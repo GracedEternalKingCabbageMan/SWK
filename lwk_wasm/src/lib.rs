@@ -42,6 +42,7 @@ mod registry;
 #[cfg(feature = "simplicity")]
 mod secret_key;
 mod seqdex_htlc;
+mod seqob_covenant;
 mod seqdex_swap;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod serial;
@@ -136,6 +137,7 @@ pub use seqdex_htlc::{
     build_seq_htlc_claim_tx, build_seq_htlc_redeem_script, build_seq_htlc_refund_tx,
     generate_swap_secret_js,
 };
+pub use seqob_covenant::{build_covenant_fill_tx_js, script_to_address};
 pub use seqdex_swap::SwapRequest;
 pub use signer::Signer;
 pub use store::{JsStorage, JsStoreLink, JsTestStore};

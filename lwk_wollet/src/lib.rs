@@ -159,8 +159,9 @@ pub use crate::seqdex_htlc::{
 };
 #[cfg(feature = "sequentia")]
 pub use crate::seqob_covenant::{
-    build_covenant_fill_tx, covenant_secret_from_hex, maker_payout_program, CovenantFillPlan,
-    CovenantInput, FillCredit, FillRemainder, TakerFundingInput,
+    build_covenant_fill_tx, build_covenant_refund_tx, covenant_secret_from_hex,
+    maker_payout_program, CovenantFillPlan, CovenantInput, CovenantRefundInput, CovenantRefundPlan,
+    FillCredit, FillRemainder, TakerFundingInput,
 };
 #[cfg(feature = "sequentia")]
 pub use crate::seqdex_swap::{SeqdexSwapRequest, SeqdexSwapRequestOpts, SeqdexUnblindedInput};

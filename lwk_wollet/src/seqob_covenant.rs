@@ -52,13 +52,18 @@ use std::str::FromStr;
 use elements::hashes::{hash160, Hash};
 use elements::hex::{FromHex, ToHex};
 use elements::script::Builder;
+use elements::sighash::{Prevouts, SchnorrSighashType, ScriptPath, SighashCache};
 use elements::{
-    confidential, opcodes, Address, AssetId, EcdsaSighashType, LockTime, OutPoint, Script,
-    Sequence, Transaction, TxIn, TxInWitness, TxOut, Txid,
+    confidential, opcodes, Address, AssetId, BlockHash, EcdsaSighashType, LockTime, OutPoint,
+    Script, Sequence, Transaction, TxIn, TxInWitness, TxOut, Txid,
 };
 
-use crate::bitcoin::secp256k1::{self, Message, Secp256k1, SecretKey};
+use crate::bitcoin::secp256k1::{self, Keypair, Message, Secp256k1, SecretKey};
 use crate::error::Error;
+
+/// nSequence that enables (does not disable) nLockTime — required so the REFUND
+/// leaf's OP_CHECKLOCKTIMEVERIFY is enforced. Matches the proven Python spend.
+const SEQUENCE_ENABLE_LOCKTIME: u32 = 0xffff_fffe;
 
 /// SIGHASH_ALL, appended to the DER signature of each taker (p2wpkh) input.
 const SIGHASH_ALL_BYTE: u8 = 0x01;
@@ -424,6 +429,260 @@ pub fn build_covenant_fill_tx(plan: &CovenantFillPlan) -> Result<(String, Txid),
     Ok((elements::encode::serialize_hex(&tx), txid))
 }
 
+// ===========================================================================
+// REFUND — the maker reclaims an expired resting order via the CLTV leaf.
+// ===========================================================================
+
+/// The resting covenant UTXO being reclaimed via the REFUND (CLTV) leaf.
+///
+/// Unlike a FILL, the REFUND leaf is `<expiry> CLTV DROP <maker_x> CHECKSIG`: it
+/// introspects NO outputs, so the maker may send the reclaimed asset A anywhere.
+/// It requires a BIP-341 tapscript-path Schnorr signature by the maker key over
+/// the refund leaf, the tx `nLockTime >= expiry`, and this input's `nSequence`
+/// enabling locktime. `spk` is the covenant scriptPubKey (needed as the input-0
+/// prevout for the taproot sighash); `refund_leaf` + `control_block` are derived
+/// and byte-verified by the wallet's JS (`covenant.js` `deriveTaptree`).
+#[derive(Debug, Clone)]
+pub struct CovenantRefundInput {
+    /// Funding txid of the covenant UTXO (display/big-endian hex).
+    pub txid: String,
+    /// Funding vout of the covenant UTXO.
+    pub vout: u32,
+    /// The covenant's locked asset (asset A), display hex.
+    pub asset: AssetId,
+    /// The covenant's locked value (atoms of asset A).
+    pub locked: u64,
+    /// The covenant scriptPubKey (`OP_1 <output_key>`), the prevout spk for the
+    /// taproot sighash. The wallet holds this from the order it placed.
+    pub spk: Vec<u8>,
+    /// REFUND leaf script bytes (witness item 1).
+    pub refund_leaf: Vec<u8>,
+    /// REFUND control block bytes (witness item 2); its first byte is
+    /// `leaf_version | parity`, so `control_block[0] & 0xfe` is the leaf version.
+    pub control_block: Vec<u8>,
+    /// The maker's secret key authorizing the REFUND leaf. Its x-only pubkey MUST
+    /// equal the `maker_x` baked into `refund_leaf` (else the sig is unspendable).
+    pub maker_secret: SecretKey,
+}
+
+/// The full REFUND recipe the maker assembles + broadcasts to reclaim an order.
+#[derive(Debug, Clone)]
+pub struct CovenantRefundPlan {
+    /// The resting covenant UTXO (input 0), reclaimed via the CLTV leaf.
+    pub covenant: CovenantRefundInput,
+    /// The absolute-locktime expiry (CLTV height): the tx `nLockTime` is set to
+    /// this (or higher). The covenant can only be reclaimed at/after this height.
+    pub expiry_locktime: u32,
+    /// Where the reclaimed asset A is paid (the maker's own address).
+    pub reclaim_addr: Address,
+    /// The on-chain network fee, in atoms of `fee_asset`.
+    pub fee_atoms: u64,
+    /// The asset the fee is denominated in (open fee market). If it equals the
+    /// covenant asset, the fee is taken from the reclaimed A and no `fee_inputs`
+    /// are needed; otherwise the maker funds it from `fee_inputs`.
+    pub fee_asset: AssetId,
+    /// The maker's own key-path (p2wpkh) funding UTXOs for the fee, when the fee
+    /// asset is not the covenant asset. Empty when the fee is paid in asset A.
+    pub fee_inputs: Vec<TakerFundingInput>,
+    /// Where fee-asset change is paid (the maker's own address).
+    pub change_addr: Address,
+    /// The network genesis block hash — the Elements taproot sighash domain
+    /// separator. MUST be this node's genesis or the signature will not verify.
+    pub genesis_hash: BlockHash,
+}
+
+/// Assemble, sign, and serialize the raw Elements REFUND transaction.
+///
+/// Returns `(raw_tx_hex, txid)`. Input 0 is the covenant UTXO spent **script-path**
+/// via the REFUND leaf: `nLockTime` is set to `expiry_locktime`, the input's
+/// `nSequence` enables locktime, and the witness is
+/// `[maker_schnorr_sig, refund_leaf, control_block]` where the signature is over
+/// the BIP-341 tapscript (leaf-hash) sighash for input 0 (SIGHASH_DEFAULT). Any
+/// fee inputs are signed key-path (p2wpkh, segwit-v0 SIGHASH_ALL). All outputs are
+/// explicit. The REFUND leaf introspects no outputs, so `reclaim_addr` is free.
+pub fn build_covenant_refund_tx(plan: &CovenantRefundPlan) -> Result<(String, Txid), Error> {
+    let a_asset = plan.covenant.asset;
+    let fee_in_covenant_asset = plan.fee_asset == a_asset;
+
+    // ---- inputs (covenant at 0, then the maker's fee inputs) --------------
+    let cov_txid = Txid::from_str(&plan.covenant.txid).map_err(|e| {
+        Error::Generic(format!("invalid covenant txid {}: {e}", plan.covenant.txid))
+    })?;
+    let enable = Sequence::from_consensus(SEQUENCE_ENABLE_LOCKTIME);
+    let mut inputs = vec![TxIn {
+        previous_output: OutPoint::new(cov_txid, plan.covenant.vout),
+        is_pegin: false,
+        script_sig: Script::new(),
+        sequence: enable,
+        asset_issuance: Default::default(),
+        witness: TxInWitness::default(),
+    }];
+    // The prevout TxOuts, in input order, for the taproot sighash (it commits to
+    // every spent output's asset+value+scriptPubKey).
+    let mut prevouts: Vec<TxOut> = vec![explicit_out(
+        a_asset,
+        plan.covenant.locked,
+        Script::from(plan.covenant.spk.clone()),
+    )];
+    for fi in &plan.fee_inputs {
+        if fi.spk.len() != 22 || fi.spk[0] != 0x00 || fi.spk[1] != 0x14 {
+            return Err(Error::Generic(format!(
+                "refund fee input {}:{} is not p2wpkh (spk {})",
+                fi.txid,
+                fi.vout,
+                fi.spk.to_hex()
+            )));
+        }
+        let txid = Txid::from_str(&fi.txid)
+            .map_err(|e| Error::Generic(format!("invalid fee input txid {}: {e}", fi.txid)))?;
+        inputs.push(TxIn {
+            previous_output: OutPoint::new(txid, fi.vout),
+            is_pegin: false,
+            script_sig: Script::new(),
+            sequence: enable,
+            asset_issuance: Default::default(),
+            witness: TxInWitness::default(),
+        });
+        prevouts.push(explicit_out(fi.asset, fi.value, Script::from(fi.spk.clone())));
+    }
+
+    // ---- outputs ----------------------------------------------------------
+    let mut outputs: Vec<TxOut> = Vec::new();
+    let fee_out = TxOut::new_fee(plan.fee_atoms, plan.fee_asset);
+
+    if fee_in_covenant_asset {
+        // Fee is taken from the reclaimed asset A; no external fee input.
+        if !plan.fee_inputs.is_empty() {
+            return Err(Error::Generic(
+                "fee paid in the covenant asset must not carry external fee inputs".into(),
+            ));
+        }
+        let reclaim = plan.covenant.locked.checked_sub(plan.fee_atoms).ok_or_else(|| {
+            Error::Generic("fee exceeds the reclaimed covenant value".into())
+        })?;
+        if reclaim == 0 {
+            return Err(Error::Generic("reclaimed value is zero after fee".into()));
+        }
+        outputs.push(explicit_out(a_asset, reclaim, plan.reclaim_addr.script_pubkey()));
+        outputs.push(fee_out);
+    } else {
+        // Reclaim the full locked A; fund the fee (and change) from fee inputs.
+        let mut funded: BTreeMap<AssetId, u64> = BTreeMap::new();
+        for fi in &plan.fee_inputs {
+            if fi.asset == a_asset {
+                return Err(Error::Generic(
+                    "refund fee input must not be the covenant asset when the fee is a different asset"
+                        .into(),
+                ));
+            }
+            let e = funded.entry(fi.asset).or_insert(0);
+            *e = e
+                .checked_add(fi.value)
+                .ok_or_else(|| Error::Generic("refund fee funding overflow".into()))?;
+        }
+        let fee_funded = funded.get(&plan.fee_asset).copied().unwrap_or(0);
+        if fee_funded < plan.fee_atoms {
+            return Err(Error::Generic(format!(
+                "insufficient fee asset: need {}, funded {}",
+                plan.fee_atoms, fee_funded
+            )));
+        }
+        outputs.push(explicit_out(
+            a_asset,
+            plan.covenant.locked,
+            plan.reclaim_addr.script_pubkey(),
+        ));
+        // Per-asset change back to the maker for every funded asset.
+        for (asset, total) in &funded {
+            let used = if *asset == plan.fee_asset { plan.fee_atoms } else { 0 };
+            let change = total
+                .checked_sub(used)
+                .ok_or_else(|| Error::Generic("refund fee change underflow".into()))?;
+            if change > 0 {
+                outputs.push(explicit_out(*asset, change, plan.change_addr.script_pubkey()));
+            }
+        }
+        outputs.push(fee_out);
+    }
+
+    // ---- build ------------------------------------------------------------
+    let mut tx = Transaction {
+        version: 2,
+        lock_time: LockTime::from_consensus(plan.expiry_locktime),
+        input: inputs,
+        output: outputs,
+    };
+
+    // ---- sign the covenant input 0 (tapscript-path Schnorr) ---------------
+    // Leaf version is the control block's first byte with the parity bit cleared.
+    if plan.covenant.control_block.is_empty() {
+        return Err(Error::Generic("refund control block is empty".into()));
+    }
+    let leaf_version = plan.covenant.control_block[0] & 0xfe;
+    let refund_script = Script::from(plan.covenant.refund_leaf.clone());
+    let script_path = ScriptPath::new(&refund_script, 0xFFFF_FFFF, leaf_version);
+
+    let sighash = {
+        let mut cache = SighashCache::new(&tx);
+        cache
+            .taproot_script_spend_signature_hash(
+                0,
+                &Prevouts::All(&prevouts),
+                script_path,
+                SchnorrSighashType::Default,
+                plan.genesis_hash,
+            )
+            .map_err(|e| Error::Generic(format!("refund tapscript sighash: {e}")))?
+    };
+
+    let secp = Secp256k1::new();
+    let keypair = Keypair::from_secret_key(&secp, &plan.covenant.maker_secret);
+    // The refund leaf commits to the x-only (even-Y) maker key; BIP340 signing
+    // normalizes the private key so the sig verifies against that x-only key.
+    let msg = Message::from_digest(sighash.to_byte_array());
+    // Deterministic (aux_rand = zeros), matching the Python test's sign_schnorr.
+    let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+
+    // Witness: [maker_sig (64B, SIGHASH_DEFAULT), refund_leaf, control_block].
+    tx.input[0].witness.script_witness = vec![
+        sig.serialize().to_vec(),
+        plan.covenant.refund_leaf.clone(),
+        plan.covenant.control_block.clone(),
+    ];
+
+    // ---- sign the fee inputs (key-path p2wpkh, segwit-v0 SIGHASH_ALL) ------
+    for (i, fi) in plan.fee_inputs.iter().enumerate() {
+        let input_index = 1 + i; // input 0 is the covenant
+        let pk = secp256k1::PublicKey::from_secret_key(&secp, &fi.secret_key);
+        let compressed = pk.serialize();
+        let pkh = hash160::Hash::hash(&compressed).to_byte_array();
+        if p2wpkh_spk(&pkh) != fi.spk {
+            return Err(Error::Generic(format!(
+                "refund fee input {}:{} p2wpkh(key) != its scriptPubKey — wrong derivation",
+                fi.txid, fi.vout
+            )));
+        }
+        let script_code = p2wpkh_script_code(&pkh);
+        let ss = {
+            let mut cache = SighashCache::new(&tx);
+            cache.segwitv0_sighash(
+                input_index,
+                &script_code,
+                confidential::Value::Explicit(fi.value),
+                EcdsaSighashType::All,
+            )
+        };
+        let m = Message::from_digest(ss.to_byte_array());
+        let s = secp.sign_ecdsa(&m, &fi.secret_key);
+        let mut der = s.serialize_der().to_vec();
+        der.push(SIGHASH_ALL_BYTE);
+        tx.input[input_index].witness.script_witness = vec![der, compressed.to_vec()];
+    }
+
+    let txid = tx.txid();
+    Ok((elements::encode::serialize_hex(&tx), txid))
+}
+
 /// Parse a 32-byte secp256k1 secret scalar from hex (helper for the wasm layer).
 pub fn covenant_secret_from_hex(secret_hex: &str) -> Result<SecretKey, Error> {
     let bytes = Vec::<u8>::from_hex(secret_hex)
@@ -699,6 +958,256 @@ mod tests {
             fee_asset: asset_b(),
         };
         assert!(build_covenant_fill_tx(&plan).is_err());
+    }
+
+    // ---- REFUND golden vector (test/functional/gen_refund_golden.py) ------
+    // Deterministic, pinned to the regtest-proven Python refund spend
+    // (feature_seqob_covenant_fill.py build_refund): same refund leaf, control
+    // block, tapscript sighash, and (aux_rand=zeros) Schnorr signature.
+    const RGV_MAKER_SEC: &str =
+        "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
+    const RGV_MAKER_X: &str =
+        "bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2";
+    const RGV_ASSET_A: &str =
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const RGV_FEE_ASSET: &str =
+        "fefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefe";
+    const RGV_GENESIS: &str =
+        "0000000000000000000000000000000000000000000000000000000000000042";
+    const RGV_ORDER_SPK: &str =
+        "5120933b455fffa3a7bc22689079ea81ce1b6855281ff5cb5d6bf228d4696b6e637d";
+    const RGV_REFUND_LEAF: &str =
+        "029001b17520bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2ac";
+    const RGV_REFUND_CB: &str =
+        "c450929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac08040fab7573f58b10927b0e8b7046fec0f6b100f67d48296bb305dabe06b513e";
+    const RGV_FEE_PREVOUT_SPK: &str = "00141414141414141414141414141414141414141414";
+    const RGV_SIGHASH: &str =
+        "b21a2e5125876df901645bfa0d2a17c2e0604fe22a1e6024f32875b85c8d9847";
+    const RGV_SIGNATURE: &str =
+        "0872c8cedc89f5952bef81bb2c2327c4a61bcf580290a92c0c357e07196732bac9956e81e71e920ca1612fc82eb709597a72abda9e61905db4629ad6fc81c9e4";
+    const RGV_N: u64 = 1_000_000_000;
+    const RGV_FEE: u64 = 5000;
+    const RGV_FEE_IN: u64 = 40000;
+    const RGV_EXPIRY: u32 = 400;
+
+    fn addr_from_p2wpkh(pkh: u8) -> Address {
+        let spk = Script::from(p2wpkh_spk(&[pkh; 20]));
+        Address::from_script(&spk, None, &elements::AddressParams::ELEMENTS).unwrap()
+    }
+
+    fn rgv_asset(hexid: &str) -> AssetId {
+        AssetId::from_str(hexid).unwrap()
+    }
+
+    #[test]
+    fn refund_bytes_and_signature_match_golden() {
+        use crate::bitcoin::secp256k1::XOnlyPublicKey;
+
+        let maker_secret =
+            SecretKey::from_slice(&Vec::<u8>::from_hex(RGV_MAKER_SEC).unwrap()).unwrap();
+
+        // Maker-key agreement: the x-only pubkey of the signing secret MUST equal
+        // the maker_x baked into the REFUND leaf (else the reclaim is unspendable).
+        let secp = Secp256k1::new();
+        let (xonly, _) =
+            secp256k1::PublicKey::from_secret_key(&secp, &maker_secret).x_only_public_key();
+        assert_eq!(
+            xonly.serialize().to_hex(),
+            RGV_MAKER_X,
+            "signing key x-only != maker_x committed in the refund leaf"
+        );
+        // And that maker_x is exactly the 32 bytes the leaf pushes before CHECKSIG.
+        let leaf = Vec::<u8>::from_hex(RGV_REFUND_LEAF).unwrap();
+        let leaf_maker_x = &leaf[leaf.len() - 33..leaf.len() - 1]; // <32B key> then OP_CHECKSIG
+        assert_eq!(leaf_maker_x.to_hex(), RGV_MAKER_X, "refund leaf maker_x");
+        let _ = XOnlyPublicKey::from_slice(leaf_maker_x).unwrap();
+
+        // Rebuild the EXACT golden tx (the golden's fee prevout spk is a fixed dummy
+        // p2wpkh, committed by the input-0 sighash) and confirm the tapscript sighash
+        // + deterministic Schnorr signature equal the Python golden byte-for-byte.
+        // This is the input-0 REFUND spend the covenant enforces; the full-builder
+        // path (real fee key) is covered by refund_builder_distinct_fee_asset_wellformed.
+        let a_asset = rgv_asset(RGV_ASSET_A);
+        let fee_asset = rgv_asset(RGV_FEE_ASSET);
+        let genesis = BlockHash::from_str(RGV_GENESIS).unwrap();
+        let reclaim = addr_from_p2wpkh(0x33);
+        let change = addr_from_p2wpkh(0x44);
+        let order_spk = Vec::<u8>::from_hex(RGV_ORDER_SPK).unwrap();
+        let fee_prevout_spk = Vec::<u8>::from_hex(RGV_FEE_PREVOUT_SPK).unwrap();
+
+        let cov_in = TxIn {
+            previous_output: OutPoint::new(
+                Txid::from_str(&"11".repeat(32)).unwrap(),
+                0,
+            ),
+            is_pegin: false,
+            script_sig: Script::new(),
+            sequence: Sequence::from_consensus(SEQUENCE_ENABLE_LOCKTIME),
+            asset_issuance: Default::default(),
+            witness: TxInWitness::default(),
+        };
+        let fee_in = TxIn {
+            previous_output: OutPoint::new(
+                Txid::from_str(&"22".repeat(32)).unwrap(),
+                1,
+            ),
+            is_pegin: false,
+            script_sig: Script::new(),
+            sequence: Sequence::from_consensus(SEQUENCE_ENABLE_LOCKTIME),
+            asset_issuance: Default::default(),
+            witness: TxInWitness::default(),
+        };
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::from_consensus(RGV_EXPIRY),
+            input: vec![cov_in, fee_in],
+            output: vec![
+                explicit_out(a_asset, RGV_N, reclaim.script_pubkey()),
+                explicit_out(fee_asset, RGV_FEE_IN - RGV_FEE, change.script_pubkey()),
+                TxOut::new_fee(RGV_FEE, fee_asset),
+            ],
+        };
+        let prevouts = vec![
+            explicit_out(a_asset, RGV_N, Script::from(order_spk.clone())),
+            explicit_out(fee_asset, RGV_FEE_IN, Script::from(fee_prevout_spk.clone())),
+        ];
+        let refund_script = Script::from(leaf.clone());
+        let cb = Vec::<u8>::from_hex(RGV_REFUND_CB).unwrap();
+        let leaf_version = cb[0] & 0xfe;
+        let script_path = ScriptPath::new(&refund_script, 0xFFFF_FFFF, leaf_version);
+        let sighash = {
+            let mut cache = SighashCache::new(&tx);
+            cache
+                .taproot_script_spend_signature_hash(
+                    0,
+                    &Prevouts::All(&prevouts),
+                    script_path,
+                    SchnorrSighashType::Default,
+                    genesis,
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            sighash.to_byte_array().to_hex(),
+            RGV_SIGHASH,
+            "refund tapscript sighash != Python golden"
+        );
+        let keypair = Keypair::from_secret_key(&secp, &maker_secret);
+        let msg = Message::from_digest(sighash.to_byte_array());
+        let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+        assert_eq!(
+            sig.serialize().to_hex(),
+            RGV_SIGNATURE,
+            "refund Schnorr sig != Python golden (aux_rand=zeros determinism)"
+        );
+    }
+
+    #[test]
+    fn refund_builder_distinct_fee_asset_wellformed() {
+        // Exercise the full build_covenant_refund_tx on the distinct-fee-asset
+        // path with a REAL fee key (byte-exact against the golden is covered by
+        // refund_bytes_and_signature_match_golden; here we prove the assembled tx
+        // is well-formed and the covenant witness is [sig, leaf, cb]).
+        let secp = Secp256k1::new();
+        let maker_secret =
+            SecretKey::from_slice(&Vec::<u8>::from_hex(RGV_MAKER_SEC).unwrap()).unwrap();
+        let (fee_sk, fee_spk) = taker_key(0x99, 3);
+        let a_asset = rgv_asset(RGV_ASSET_A);
+        let fee_asset = rgv_asset(RGV_FEE_ASSET);
+
+        let plan = CovenantRefundPlan {
+            covenant: CovenantRefundInput {
+                txid: "11".repeat(32),
+                vout: 0,
+                asset: a_asset,
+                locked: RGV_N,
+                spk: Vec::<u8>::from_hex(RGV_ORDER_SPK).unwrap(),
+                refund_leaf: Vec::<u8>::from_hex(RGV_REFUND_LEAF).unwrap(),
+                control_block: Vec::<u8>::from_hex(RGV_REFUND_CB).unwrap(),
+                maker_secret,
+            },
+            expiry_locktime: RGV_EXPIRY,
+            reclaim_addr: addr_from_p2wpkh(0x33),
+            fee_atoms: RGV_FEE,
+            fee_asset,
+            fee_inputs: vec![TakerFundingInput {
+                txid: "22".repeat(32),
+                vout: 1,
+                value: RGV_FEE_IN,
+                asset: fee_asset,
+                spk: fee_spk,
+                secret_key: fee_sk,
+            }],
+            change_addr: addr_from_p2wpkh(0x44),
+            genesis_hash: BlockHash::from_str(RGV_GENESIS).unwrap(),
+        };
+        let (hex, _txid) = build_covenant_refund_tx(&plan).unwrap();
+        let tx: Transaction =
+            elements::encode::deserialize(&Vec::<u8>::from_hex(&hex).unwrap()).unwrap();
+
+        // lock_time == expiry; covenant input non-final.
+        assert_eq!(tx.lock_time, LockTime::from_consensus(RGV_EXPIRY));
+        assert_eq!(
+            tx.input[0].sequence,
+            Sequence::from_consensus(SEQUENCE_ENABLE_LOCKTIME)
+        );
+        // Covenant witness == [sig(64), refund_leaf, control_block].
+        let w = &tx.input[0].witness.script_witness;
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].len(), 64, "SIGHASH_DEFAULT schnorr sig is 64 bytes");
+        assert_eq!(w[1].to_hex(), RGV_REFUND_LEAF);
+        assert_eq!(w[2].to_hex(), RGV_REFUND_CB);
+        // Reclaim output 0 == full locked A to the maker.
+        assert_eq!(tx.output[0].asset, confidential::Asset::Explicit(a_asset));
+        assert_eq!(tx.output[0].value, confidential::Value::Explicit(RGV_N));
+        // A fee output exists in the fee asset.
+        assert!(tx.output.iter().any(|o| o.is_fee()
+            && o.asset == confidential::Asset::Explicit(fee_asset)
+            && o.value == confidential::Value::Explicit(RGV_FEE)));
+        // Fee-asset change present.
+        assert!(tx.output.iter().any(|o| !o.is_fee()
+            && o.asset == confidential::Asset::Explicit(fee_asset)
+            && o.value == confidential::Value::Explicit(RGV_FEE_IN - RGV_FEE)));
+    }
+
+    #[test]
+    fn refund_builder_fee_in_covenant_asset() {
+        // Fee paid in the covenant asset: no external fee input; reclaim = locked
+        // - fee, fee output in asset A. Value balances from the covenant input alone.
+        let maker_secret =
+            SecretKey::from_slice(&Vec::<u8>::from_hex(RGV_MAKER_SEC).unwrap()).unwrap();
+        let a_asset = rgv_asset(RGV_ASSET_A);
+        let plan = CovenantRefundPlan {
+            covenant: CovenantRefundInput {
+                txid: "11".repeat(32),
+                vout: 0,
+                asset: a_asset,
+                locked: RGV_N,
+                spk: Vec::<u8>::from_hex(RGV_ORDER_SPK).unwrap(),
+                refund_leaf: Vec::<u8>::from_hex(RGV_REFUND_LEAF).unwrap(),
+                control_block: Vec::<u8>::from_hex(RGV_REFUND_CB).unwrap(),
+                maker_secret,
+            },
+            expiry_locktime: RGV_EXPIRY,
+            reclaim_addr: addr_from_p2wpkh(0x33),
+            fee_atoms: RGV_FEE,
+            fee_asset: a_asset,
+            fee_inputs: vec![],
+            change_addr: addr_from_p2wpkh(0x44),
+            genesis_hash: BlockHash::from_str(RGV_GENESIS).unwrap(),
+        };
+        let (hex, _txid) = build_covenant_refund_tx(&plan).unwrap();
+        let tx: Transaction =
+            elements::encode::deserialize(&Vec::<u8>::from_hex(&hex).unwrap()).unwrap();
+        assert_eq!(tx.input.len(), 1, "no external fee input");
+        assert_eq!(tx.input[0].witness.script_witness.len(), 3);
+        assert_eq!(
+            tx.output[0].value,
+            confidential::Value::Explicit(RGV_N - RGV_FEE)
+        );
+        assert!(tx.output.iter().any(|o| o.is_fee()
+            && o.asset == confidential::Asset::Explicit(a_asset)
+            && o.value == confidential::Value::Explicit(RGV_FEE)));
     }
 
     #[test]

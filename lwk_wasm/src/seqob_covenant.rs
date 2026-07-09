@@ -13,11 +13,14 @@
 //! It also exposes [`covenant_maker_address`], the BIP86 taproot receive address +
 //! its 32-byte `maker_prog` a maker needs to place an order and later be paid.
 
+use std::str::FromStr;
+
 use lwk_wollet::bitcoin::bip32;
 use lwk_wollet::elements::hex::{FromHex, ToHex};
 use lwk_wollet::{
-    build_covenant_fill_tx, covenant_secret_from_hex, maker_payout_program, CovenantFillPlan,
-    CovenantInput, FillCredit, FillRemainder, TakerFundingInput,
+    build_covenant_fill_tx, build_covenant_refund_tx, covenant_secret_from_hex,
+    maker_payout_program, CovenantFillPlan, CovenantInput, CovenantRefundInput, CovenantRefundPlan,
+    FillCredit, FillRemainder, TakerFundingInput,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -203,6 +206,126 @@ pub fn build_covenant_fill_tx_js(recipe: JsValue, network: &Network) -> Result<J
     };
 
     let (raw_hex, txid) = build_covenant_fill_tx(&plan)?;
+    Ok(serde_wasm_bindgen::to_value(&BuiltFillTx {
+        raw_hex,
+        txid: txid.to_string(),
+    })?)
+}
+
+/// The REFUND recipe JS assembles to reclaim an EXPIRED resting covenant order.
+///
+/// Byte-exact fields (`refundLeafHex`, `controlBlockHex`, `covenantSpkHex`) come
+/// straight from `covenant.js` `deriveTaptree`. `makerKeyPath` is the BIP32 path
+/// of the key the REFUND leaf commits to (the same `m/86'/coin'/0'/0/index`
+/// `covenantMakerAddress` returned as `internalKey`); the helper derives that key
+/// and signs the tapscript-path Schnorr signature with it. `genesisHex` is the
+/// network genesis block hash (the Elements taproot sighash domain separator),
+/// which JS fetches from the node (`/block-height/0`). Amounts are decimal strings.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CovenantRefundRecipeJson {
+    covenant_txid: String,
+    covenant_vout: u32,
+    covenant_asset: String,
+    covenant_locked: String,
+    covenant_spk_hex: String,
+    refund_leaf_hex: String,
+    control_block_hex: String,
+    expiry_locktime: u32,
+    genesis_hex: String,
+
+    maker_reclaim_addr: String,
+    maker_key_path: String,
+
+    fee_atoms: String,
+    fee_asset: String,
+    #[serde(default)]
+    extra_fee_utxos: Vec<TakerUtxoJson>,
+    change_addr: String,
+    mnemonic: String,
+}
+
+/// Assemble, sign, and serialize the covenant REFUND transaction in-browser.
+///
+/// Takes the JS REFUND recipe (see [`CovenantRefundRecipeJson`]) plus the wallet's
+/// recovery phrase. Input 0 is the covenant UTXO spent **script-path** via the
+/// CLTV REFUND leaf: the tx `nLockTime` is set to `expiryLocktime`, the input's
+/// `nSequence` enables locktime, the maker key derived at `makerKeyPath` signs the
+/// BIP-341 tapscript sighash, and the witness is
+/// `[maker_sig, refund_leaf, control_block]`. When the fee asset differs from the
+/// covenant asset, `extraFeeUtxos` (the maker's own p2wpkh coins) fund the fee and
+/// are signed key-path. Returns `{ rawHex, txid }`.
+#[wasm_bindgen(js_name = buildCovenantRefundTx)]
+pub fn build_covenant_refund_tx_js(recipe: JsValue, network: &Network) -> Result<JsValue, Error> {
+    use lwk_wollet::elements::BlockHash;
+
+    let r: CovenantRefundRecipeJson = serde_wasm_bindgen::from_value(recipe)?;
+
+    let signer = crate::Signer::new(&crate::Mnemonic::new(&r.mnemonic)?, network)?;
+    let coin: u32 = if network.is_mainnet() { 1776 } else { 1 };
+
+    // The maker key the REFUND leaf commits to. `makerKeyPath` is the full BIP32
+    // path (e.g. `m/86'/1'/0'/0/0`); its x-only pubkey must equal the leaf's
+    // `maker_x`. The core builder re-checks the sig verifies against the leaf.
+    let maker_path = bip32::DerivationPath::from_str(r.maker_key_path.trim_start_matches("m/"))
+        .or_else(|_| bip32::DerivationPath::from_str(&r.maker_key_path))
+        .map_err(|e| Error::Generic(format!("invalid makerKeyPath '{}': {e}", r.maker_key_path)))?;
+    let maker_xprv = signer
+        .inner
+        .derive_xprv(&maker_path)
+        .map_err(|e| Error::Generic(format!("derive maker key: {e}")))?;
+    let maker_secret = covenant_secret_from_hex(&maker_xprv.private_key.secret_bytes().to_hex())?;
+
+    // The maker's own p2wpkh fee-funding coins (only when the fee asset differs
+    // from the covenant asset), re-derived at m/84'/coin'/0'/chain/index.
+    let mut fee_inputs = Vec::with_capacity(r.extra_fee_utxos.len());
+    for u in &r.extra_fee_utxos {
+        let path = bip32::DerivationPath::from(vec![
+            bip32::ChildNumber::Hardened { index: 84 },
+            bip32::ChildNumber::Hardened { index: coin },
+            bip32::ChildNumber::Hardened { index: 0 },
+            bip32::ChildNumber::Normal { index: u.chain },
+            bip32::ChildNumber::Normal { index: u.index },
+        ]);
+        let xprv = signer
+            .inner
+            .derive_xprv(&path)
+            .map_err(|e| Error::Generic(format!("derive fee key: {e}")))?;
+        let secret_key = covenant_secret_from_hex(&xprv.private_key.secret_bytes().to_hex())?;
+        fee_inputs.push(TakerFundingInput {
+            txid: u.txid.clone(),
+            vout: u.vout,
+            value: parse_u64(&u.value, "fee utxo value")?,
+            asset: parse_asset(&u.asset, "fee utxo")?,
+            spk: hexbytes(&u.spk_hex, "fee utxo spk")?,
+            secret_key,
+        });
+    }
+
+    let genesis_hash = BlockHash::from_str(&r.genesis_hex)
+        .map_err(|e| Error::Generic(format!("invalid genesisHex '{}': {e}", r.genesis_hex)))?;
+
+    let plan = CovenantRefundPlan {
+        covenant: CovenantRefundInput {
+            txid: r.covenant_txid,
+            vout: r.covenant_vout,
+            asset: parse_asset(&r.covenant_asset, "covenant")?,
+            locked: parse_u64(&r.covenant_locked, "covenantLocked")?,
+            spk: hexbytes(&r.covenant_spk_hex, "covenantSpk")?,
+            refund_leaf: hexbytes(&r.refund_leaf_hex, "refundLeaf")?,
+            control_block: hexbytes(&r.control_block_hex, "controlBlock")?,
+            maker_secret,
+        },
+        expiry_locktime: r.expiry_locktime,
+        reclaim_addr: parse_addr(&r.maker_reclaim_addr, "maker reclaim")?,
+        fee_atoms: parse_u64(&r.fee_atoms, "feeAtoms")?,
+        fee_asset: parse_asset(&r.fee_asset, "fee")?,
+        fee_inputs,
+        change_addr: parse_addr(&r.change_addr, "change")?,
+        genesis_hash,
+    };
+
+    let (raw_hex, txid) = build_covenant_refund_tx(&plan)?;
     Ok(serde_wasm_bindgen::to_value(&BuiltFillTx {
         raw_hex,
         txid: txid.to_string(),

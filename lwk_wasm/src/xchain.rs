@@ -50,6 +50,15 @@ pub fn xchain_btc_refund_pubkey(mnemonic: &str) -> Result<String, Error> {
     xchain::btc_refund_keypair(&params(), mnemonic, xchain::PathMode::Canonical).map(|(_, p)| p).map_err(to_err)
 }
 
+/// The device's BTC-leg CLAIM pubkey (33-byte compressed hex). This is the
+/// `btc_claim_pub` the wallet sends to the LSP `/swap {side:sell}`; the LSP puts it
+/// in the HTLC's IF branch, and `xchainBtcClaim` signs the on-chain claim with the
+/// matching key. Derived at a DISTINCT path from `xchainBtcRefundPubkey`.
+#[wasm_bindgen(js_name = xchainBtcClaimPubkey)]
+pub fn xchain_btc_claim_pubkey(mnemonic: &str) -> Result<String, Error> {
+    xchain::btc_claim_keypair(&params(), mnemonic, xchain::PathMode::Canonical).map(|(_, p)| p).map_err(to_err)
+}
+
 /// Build the BTC HTLC the wallet funds: `{ redeemScriptHex, p2shAddress, p2shSpkHex }`.
 #[wasm_bindgen(js_name = xchainBtcHtlc)]
 pub fn xchain_btc_htlc(hash_hex: &str, claim_pub_hex: &str, refund_pub_hex: &str, locktime: u32) -> Result<JsValue, Error> {
@@ -138,6 +147,39 @@ pub fn xchain_btc_refund(
         fee_sats,
     };
     htlc::build_refund_tx(&redeem, &spend, locktime, &sk).map_err(to_err)
+}
+
+/// Build + sign the BTC HTLC CLAIM (IF/preimage branch) for a sub-asset SELL. The
+/// exact mirror of `xchainBtcRefund` but the CLAIM key + IF-branch items: scriptSig
+/// `<sig> <preimage> OP_1 <redeemScript>`, `nSequence = 0xffffffff`, `nLockTime = 0`.
+/// Same proven legacy `CalcSignatureHash` + low-S DER || 0x01 signing. Returns raw tx
+/// hex to broadcast. Pass `redeem_script_hex` = the `btc_htlc.redeem_script` from the
+/// `/swap` response (rebuild + byte-compare it via `xchainBtcHtlc` first),
+/// `dest_spk_hex` = the scriptPubKey the claimed BTC pays to, and `preimage_hex` = the
+/// `preimage` the LSP returned.
+#[wasm_bindgen(js_name = xchainBtcClaim)]
+#[allow(clippy::too_many_arguments)]
+pub fn xchain_btc_claim(
+    mnemonic: &str,
+    redeem_script_hex: &str,
+    dest_spk_hex: &str,
+    btc_txid: &str,
+    btc_vout: u32,
+    btc_amount_sats: u64,
+    fee_sats: u64,
+    preimage_hex: &str,
+) -> Result<String, Error> {
+    let (sk, _) = xchain::btc_claim_keypair(&params(), mnemonic, xchain::PathMode::Canonical).map_err(to_err)?;
+    let redeem = ScriptBuf::from_hex(redeem_script_hex).map_err(|e| Error::Generic(e.to_string()))?;
+    let preimage = hexbytes(preimage_hex)?;
+    let spend = htlc::BtcHtlcSpend {
+        txid: btc_txid.to_string(),
+        vout: btc_vout,
+        amount_sats: btc_amount_sats,
+        dest_spk: ScriptBuf::from_hex(dest_spk_hex).map_err(|e| Error::Generic(e.to_string()))?,
+        fee_sats,
+    };
+    htlc::build_claim_tx(&redeem, &spend, &preimage, &sk).map_err(to_err)
 }
 
 /// Seal the swap-state JSON (incl. the non-HD secret) under a passphrase; base64.

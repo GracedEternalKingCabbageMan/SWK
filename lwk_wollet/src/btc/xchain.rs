@@ -66,6 +66,13 @@ impl PathMode {
         // The legacy web wallet never built a BTC refund, so canonical for both.
         "m/84h/1h/0h/2/0"
     }
+    fn btc_claim_path(self) -> &'static str {
+        // DISTINCT from btc_refund (…/2/0) and seq_claim (…/3/0): the CLAIM key
+        // spends the HTLC's IF/preimage branch and MUST differ from the refund
+        // key, so a single leaked key can never unlock both branches. Index 4 is
+        // still outside the receive(0)/change(1) branches (never swept as funds).
+        "m/84h/1h/0h/4/0"
+    }
 }
 
 /// Derive `(secret, 33-byte compressed pubkey hex)` at `path`. Byte-identical to
@@ -96,6 +103,18 @@ pub fn btc_refund_keypair(
     mode: PathMode,
 ) -> Result<(SecretKey, String), Error> {
     derive_keypair(params, mnemonic, mode.btc_refund_path())
+}
+
+/// The taker's BTC-CLAIM keypair (spends the BTC HTLC's IF/preimage branch). This
+/// is the money key for a sub-asset SELL: the pubkey is the `btc_claim_pub` sent to
+/// the LSP `/swap`, and the secret signs the on-chain claim once the preimage is
+/// learned. Its path is distinct from the refund key's (see `btc_claim_path`).
+pub fn btc_claim_keypair(
+    params: &ChainAddressParams,
+    mnemonic: &str,
+    mode: PathMode,
+) -> Result<(SecretKey, String), Error> {
+    derive_keypair(params, mnemonic, mode.btc_claim_path())
 }
 
 /// A fresh swap preimage + its SHA256 hashlock, as `(secret_hex, hash_hex)`. The

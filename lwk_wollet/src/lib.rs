@@ -110,6 +110,8 @@ mod tx_details;
 mod pos;
 
 mod pset_create;
+#[cfg(feature = "adaptor")]
+pub mod adaptor;
 #[cfg(feature = "openamp")]
 pub mod openamp;
 #[cfg(feature = "registry")]
@@ -145,6 +147,10 @@ pub use crate::model::{
     WalletTxOut,
 };
 pub use crate::pegin::fed_peg_script;
+#[cfg(feature = "adaptor")]
+pub use crate::adaptor::{
+    adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify, PRESIG_LEN, SIG_LEN,
+};
 #[cfg(feature = "registry")]
 pub use crate::registry::RegistryAssetData;
 #[cfg(feature = "openamp")]

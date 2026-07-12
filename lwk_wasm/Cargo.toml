@@ -37,6 +37,7 @@ lwk_wollet = { version = "0.18.0", default-features = false, features = [
     "registry",
     "sequentia",
     "openamp",
+    "adaptor",
     "btc-async",
 ] }
 lwk_boltz = { version = "0.18.0", default-features = false }

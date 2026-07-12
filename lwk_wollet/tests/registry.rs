@@ -24,14 +24,14 @@ fn test_registry() {
     w.fund_btc(&env);
 
     // Issue an asset
-    let contract = Contract {
-        entity: Entity::Domain("liquidtestnet.com".into()),
-        issuer_pubkey: [2; 33].into(),
-        name: "Test Asset".into(),
-        precision: 0,
-        ticker: "TEST".into(),
-        version: 0,
-    };
+    let contract = Contract::from_parts(
+        Entity::Domain("liquidtestnet.com".into()),
+        [2u8; 33].to_vec(),
+        "Test Asset".into(),
+        0,
+        "TEST".into(),
+        0,
+    );
 
     let mut pset = w
         .tx_builder()

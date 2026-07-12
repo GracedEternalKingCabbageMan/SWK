@@ -31,6 +31,7 @@ mod ledger;
 mod liquidex;
 mod mnemonic;
 mod network;
+mod openamp;
 mod pos;
 mod precision;
 mod prices;
@@ -121,6 +122,9 @@ pub use jade_websocket::JadeWebSocket;
 pub use keypair::Keypair;
 pub use mnemonic::Mnemonic;
 pub use network::Network;
+pub use openamp::{
+    compute_aid, decode_enclave_spend, enclave_sighash, tagged_hash, Openamp,
+};
 pub use pos::PosConfig;
 pub use precision::Precision;
 pub use prices::{ExchangeRates, PricesFetcher, PricesFetcherBuilder};

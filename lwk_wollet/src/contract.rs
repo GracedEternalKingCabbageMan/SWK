@@ -11,7 +11,7 @@ use crate::error::Error;
 use crate::util::{serde_from_hex, serde_to_hex, verify_pubkey};
 use once_cell::sync::Lazy;
 use regex_lite::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 static RE_NAME: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[[:ascii:]]{1,255}$").expect("static"));
@@ -43,13 +43,36 @@ impl Entity {
 // Order of the fields here determines the serialization order, make sure it's ordered
 // lexicographically.
 
-/// A contract defining metadata of an asset such the name and the ticker
+// The typed, lexicographically-ordered view of a contract that serde serializes
+// and deserializes. Its byte form is the Sequentia-registry canonical contract.
+// SWK-4: a full contract may carry extra blocks (notably the OpenAMP `openamp`
+// block) that this typed view drops; [`Contract`] keeps the ORIGINAL parsed
+// `serde_json::Value` alongside it so the hash is over the exact committed bytes
+// and the dropped blocks stay reachable via [`Contract::openamp`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+struct ContractFields {
+    entity: Entity,
+    #[serde(deserialize_with = "serde_from_hex", serialize_with = "serde_to_hex")]
+    issuer_pubkey: Vec<u8>,
+    name: String,
+    precision: u8,
+    ticker: String,
+    version: u8,
+}
+
+/// A contract defining metadata of an asset such the name and the ticker.
+///
+/// The typed fields below are the Sequentia-registry core; a contract parsed from
+/// JSON also retains its ORIGINAL `serde_json::Value` (SWK-4) so that
+/// [`Self::contract_hash()`] hashes the exact committed bytes (including any
+/// `openamp` block) and [`Self::openamp()`] can expose that block. Contracts built
+/// field-by-field (via [`Self::from_parts`]) carry no raw value and hash their
+/// canonical typed form.
+#[derive(Debug, Clone)]
 pub struct Contract {
     /// The entity of the asset, such as the domain of the issuer
     pub entity: Entity,
 
-    #[serde(deserialize_with = "serde_from_hex", serialize_with = "serde_to_hex")]
     /// The public key of the issuer, 33 bytes long.
     pub issuer_pubkey: Vec<u8>,
 
@@ -70,9 +93,96 @@ pub struct Contract {
 
     /// The version of the contract, currently only 0 is supported
     pub version: u8,
+
+    /// The ORIGINAL parsed JSON value, when this contract was parsed from JSON
+    /// (SWK-4). `None` for contracts built via [`Self::from_parts`].
+    raw: Option<Value>,
+}
+
+// Contract identity is its typed fields; the retained raw value never affects
+// equality (two representations of the same contract compare equal).
+impl PartialEq for Contract {
+    fn eq(&self, other: &Self) -> bool {
+        self.entity == other.entity
+            && self.issuer_pubkey == other.issuer_pubkey
+            && self.name == other.name
+            && self.precision == other.precision
+            && self.ticker == other.ticker
+            && self.version == other.version
+    }
+}
+
+impl Serialize for Contract {
+    // Serialize only the canonical typed fields, in lexicographic order (the raw
+    // value is never re-emitted here; use `contract_hash` for the committed bytes).
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ContractFields {
+            entity: self.entity.clone(),
+            issuer_pubkey: self.issuer_pubkey.clone(),
+            name: self.name.clone(),
+            precision: self.precision,
+            ticker: self.ticker.clone(),
+            version: self.version,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Contract {
+    // Capture the ORIGINAL JSON value, then project the typed fields out of it.
+    // This is the SWK-4 fidelity fix: registry/openampd JSON carrying an `openamp`
+    // block round-trips its hash-committed bytes instead of dropping the block.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let fields: ContractFields =
+            serde_json::from_value(value.clone()).map_err(serde::de::Error::custom)?;
+        Ok(Contract {
+            entity: fields.entity,
+            issuer_pubkey: fields.issuer_pubkey,
+            name: fields.name,
+            precision: fields.precision,
+            ticker: fields.ticker,
+            version: fields.version,
+            raw: Some(value),
+        })
+    }
 }
 
 impl Contract {
+    /// Build a contract from its typed parts (no raw JSON is retained; the hash is
+    /// over the canonical typed form).
+    pub fn from_parts(
+        entity: Entity,
+        issuer_pubkey: Vec<u8>,
+        name: String,
+        precision: u8,
+        ticker: String,
+        version: u8,
+    ) -> Self {
+        Self {
+            entity,
+            issuer_pubkey,
+            name,
+            precision,
+            ticker,
+            version,
+            raw: None,
+        }
+    }
+
+    /// The full parsed contract JSON, when this contract was parsed from JSON.
+    pub fn raw(&self) -> Option<&Value> {
+        self.raw.as_ref()
+    }
+
+    /// The contract's `openamp` block (SWK-4), when present. This is the OpenAMP
+    /// restriction legend / policy key / `terms_hash` carrier (contract-v1 §1); it
+    /// is only reachable because the raw value is retained, since the typed struct
+    /// drops it.
+    pub fn openamp(&self) -> Option<&Value> {
+        self.raw.as_ref().and_then(|v| v.get("openamp"))
+    }
+
     /// Create a new contract from a JSON value, doesn't validate the contract, use [`Self::validate()`] to validate the contract.
     pub fn from_value(value: &Value) -> Result<Self, Error> {
         Ok(serde_json::from_value(value.clone())?)
@@ -110,9 +220,19 @@ impl Contract {
     /// Compute the hash of the contract from its JSON representation
     ///
     /// The asset id and the reissuance token id are committed to this hash.
+    ///
+    /// SWK-4: when this contract was parsed from JSON, the hash is over the ORIGINAL
+    /// value (including any `openamp` block), so OpenAMP assets verify against the
+    /// on-chain asset id instead of being rejected by a lossy re-serialization.
+    /// Field-built contracts hash their canonical typed form.
     pub fn contract_hash(&self) -> Result<ContractHash, Error> {
-        let value = serde_json::to_value(self)?;
-        contract_json_hash(&value)
+        match &self.raw {
+            Some(raw) => contract_json_hash(raw),
+            None => {
+                let value = serde_json::to_value(self)?;
+                contract_json_hash(&value)
+            }
+        }
     }
 }
 

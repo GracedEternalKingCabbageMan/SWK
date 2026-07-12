@@ -40,14 +40,14 @@ impl Contract {
         ticker: &str,
         version: u8,
     ) -> Result<Contract, Error> {
-        let inner = lwk_wollet::Contract {
-            entity: lwk_wollet::Entity::Domain(domain.to_string()),
-            issuer_pubkey: Vec::<u8>::from_hex(issuer_pubkey)?,
-            name: name.to_string(),
+        let inner = lwk_wollet::Contract::from_parts(
+            lwk_wollet::Entity::Domain(domain.to_string()),
+            Vec::<u8>::from_hex(issuer_pubkey)?,
+            name.to_string(),
             precision,
-            ticker: ticker.to_string(),
+            ticker.to_string(),
             version,
-        };
+        );
         inner.validate()?; // TODO validate should be the constructor
         Ok(Self { inner })
     }

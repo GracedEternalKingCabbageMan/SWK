@@ -108,6 +108,104 @@ impl Signer {
     pub fn derive_bip85_mnemonic(&self, index: u32, word_count: u32) -> Result<Mnemonic, Error> {
         Ok(self.inner.derive_bip85_mnemonic(index, word_count)?.into())
     }
+
+    // ---- OpenAMP identity + signing (SWK-1) --------------------------------
+    // The canonical OpenAMP enclave key is BIP32 m/5/0 (spec 1.1), matching Ambra
+    // (m/2/0 = staker, m/3/0 = SeqDEX HTLC, m/5/0 = OpenAMP). The secret NEVER
+    // leaves Rust: signing happens here, deterministically (no aux rand), so
+    // signatures are cross-implementation reproducible against Ambra's
+    // `openamp_sign_sighash`. This is deliberately NOT the m/3/0 `htlcKeypair` the
+    // web wallet reused (WW-1 security bug), and NOT the randomized-aux
+    // `Keypair.signSchnorr`.
+
+    fn openamp_keypair(
+        &self,
+    ) -> Result<lwk_wollet::bitcoin::secp256k1::Keypair, Error> {
+        use lwk_wollet::bitcoin::secp256k1::{Keypair, Secp256k1};
+        let path = bip32::DerivationPath::from(vec![
+            bip32::ChildNumber::Normal { index: 5 },
+            bip32::ChildNumber::Normal { index: 0 },
+        ]);
+        let xprv = self
+            .inner
+            .derive_xprv(&path)
+            .map_err(|e| Error::Generic(e.to_string()))?;
+        let secp = Secp256k1::new();
+        Ok(Keypair::from_secret_key(&secp, &xprv.private_key))
+    }
+
+    /// The wallet's OpenAMP identity: the x-only pubkey of the m/5/0 key, 64-hex.
+    /// This is the pubkey registered with openampd (`POST /v1/users`) and the one
+    /// the local AID is computed from.
+    #[wasm_bindgen(js_name = openampXonlyPubkey)]
+    pub fn openamp_xonly_pubkey(&self) -> Result<String, Error> {
+        use lwk_wollet::elements::hex::ToHex;
+        let keypair = self.openamp_keypair()?;
+        let (xonly, _parity) = keypair.x_only_public_key();
+        Ok(xonly.serialize().to_hex())
+    }
+
+    /// Sign a 32-byte Elements taproot enclave sighash (given as 64-hex) with the
+    /// m/5/0 key, returning a 128-hex plain (untagged) BIP340 signature (spec
+    /// 0.4(1)). DETERMINISTIC: aux rand is all-zeros, so the signature matches
+    /// Ambra byte-for-byte.
+    ///
+    /// SAFETY: the caller MUST have recomputed this digest itself from the
+    /// transaction and prevouts (SWK-6, `enclaveSighash`) and shown the decoded
+    /// effects; this method never inspects what it signs (spec 0.4(3)). It is only
+    /// reached by the hosted-send / settlement path, never a deep link.
+    #[wasm_bindgen(js_name = openampSignSighash)]
+    pub fn openamp_sign_sighash(&self, digest_hex: &str) -> Result<String, Error> {
+        use lwk_wollet::bitcoin::secp256k1::{Message, Secp256k1};
+        use lwk_wollet::elements::hex::{FromHex, ToHex};
+        let bytes = Vec::<u8>::from_hex(digest_hex)
+            .map_err(|e| Error::Generic(format!("invalid digest hex: {e}")))?;
+        let digest: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| Error::Generic("digest must be 32 bytes".into()))?;
+        let keypair = self.openamp_keypair()?;
+        let secp = Secp256k1::new();
+        let msg = Message::from_digest(digest);
+        let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+        Ok(sig.serialize().to_hex())
+    }
+
+    /// Sign a TAGGED message with the m/5/0 key (spec 0.4(2)): computes
+    /// `tagged_hash(tag, message) = sha256(sha256(tag)||sha256(tag)||message)` then
+    /// plain BIP340 over that, returning 128-hex. `message_hex` is the message
+    /// bytes as hex (the UTF-8 challenge string for `openamp-challenge-v1`, or the
+    /// 32-byte document hash for `openamp-document-v1`).
+    ///
+    /// This surface can NEVER authorize an enclave spend: it has no raw-digest
+    /// mode, and the tagged hash domain-separates it from any transfer sighash.
+    #[wasm_bindgen(js_name = openampSignTagged)]
+    pub fn openamp_sign_tagged(&self, tag: &str, message_hex: &str) -> Result<String, Error> {
+        use lwk_wollet::bitcoin::secp256k1::{Message, Secp256k1};
+        use lwk_wollet::elements::hex::{FromHex, ToHex};
+        let message = Vec::<u8>::from_hex(message_hex)
+            .map_err(|e| Error::Generic(format!("invalid message hex: {e}")))?;
+        let digest = lwk_wollet::tagged_hash(tag, &message);
+        let keypair = self.openamp_keypair()?;
+        let secp = Secp256k1::new();
+        let msg = Message::from_digest(digest);
+        let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+        Ok(sig.serialize().to_hex())
+    }
+
+    /// Sign a tagged UTF-8 challenge string directly (convenience over
+    /// [`Self::openamp_sign_tagged`] for the common challenge case): the message is
+    /// the raw UTF-8 bytes of `challenge` under the `openamp-challenge-v1` tag.
+    #[wasm_bindgen(js_name = openampSignChallenge)]
+    pub fn openamp_sign_challenge(&self, challenge: &str) -> Result<String, Error> {
+        use lwk_wollet::bitcoin::secp256k1::{Message, Secp256k1};
+        use lwk_wollet::elements::hex::ToHex;
+        let digest = lwk_wollet::tagged_hash(lwk_wollet::TAG_CHALLENGE, challenge.as_bytes());
+        let keypair = self.openamp_keypair()?;
+        let secp = Secp256k1::new();
+        let msg = Message::from_digest(digest);
+        let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+        Ok(sig.serialize().to_hex())
+    }
 }
 
 #[allow(dead_code)]

@@ -149,6 +149,9 @@ btc = ["bitcoin", "sequentia"]
 btc-async = ["btc", "reqwest", "age"]
 btc-blocking = ["btc", "reqwest", "age"]
 amp2 = ["reqwest"]
+# OpenAMP restricted-asset client + enclave signing helpers (SWK-2/SWK-6).
+# Reuses only amp2's async+blocking reqwest pattern; architecturally independent.
+openamp = ["reqwest"]
 amp0 = [
     "tokio-tungstenite",
     "reqwest",

@@ -110,6 +110,8 @@ mod tx_details;
 mod pos;
 
 mod pset_create;
+#[cfg(feature = "openamp")]
+pub mod openamp;
 #[cfg(feature = "registry")]
 pub mod registry;
 #[cfg(feature = "sequentia")]
@@ -145,6 +147,13 @@ pub use crate::model::{
 pub use crate::pegin::fed_peg_script;
 #[cfg(feature = "registry")]
 pub use crate::registry::RegistryAssetData;
+#[cfg(feature = "openamp")]
+pub use crate::openamp::{
+    compute_aid, decode_enclave_spend, enclave_sighash, prevouts_to_txouts, tagged_hash,
+    DecodedInput, DecodedOutput, EnclaveAddress, EnclaveBalance, EnclavePrevout,
+    EnclaveSpendEffects, OpenampClient, OpenampUser, ToSign, TransferDraft, TransferResult,
+    TAG_CHALLENGE, TAG_DOCUMENT,
+};
 pub use crate::tx_details::{TxDetails, TxOpt, TxOutDetails, TxsOpt};
 pub use crate::wollet::DirectoryIdHash;
 

@@ -152,6 +152,9 @@ amp2 = ["reqwest"]
 # OpenAMP restricted-asset client + enclave signing helpers (SWK-2/SWK-6).
 # Reuses only amp2's async+blocking reqwest pattern; architecturally independent.
 openamp = ["reqwest"]
+# BIP340 Schnorr adaptor-signature primitive (btc-atomic-swap-followup §8). Pure
+# in-house crypto on the vendored secp256k1 0.29 point/scalar ops; no extra deps.
+adaptor = []
 amp0 = [
     "tokio-tungstenite",
     "reqwest",

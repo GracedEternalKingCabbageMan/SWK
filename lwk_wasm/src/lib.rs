@@ -6,6 +6,7 @@
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod amp0;
 
+mod adaptor;
 mod amp2;
 mod balance;
 mod bip;
@@ -122,6 +123,7 @@ pub use jade_websocket::JadeWebSocket;
 pub use keypair::Keypair;
 pub use mnemonic::Mnemonic;
 pub use network::Network;
+pub use adaptor::{adaptor_complete, adaptor_extract, adaptor_sign, adaptor_verify};
 pub use openamp::{
     compute_aid, decode_enclave_spend, enclave_sighash, tagged_hash, Openamp,
 };

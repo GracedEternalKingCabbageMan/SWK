@@ -413,6 +413,81 @@ pub mod blocking {
         let body = resp.text().map_err(map)?;
         super::super::core::parse_broadcast(ok, &body)
     }
+
+    /// Read the maker's revealed preimage from its on-chain spend of the taker's
+    /// funded SEQ asset leg — the REVERSE-swap reveal (asset -> BTC). Finds the tx
+    /// that spent `(seq_leg_txid, vout)` on the SEQ esplora, then returns the
+    /// scriptSig/witness data push whose `sha256` equals `hash_hex` (the agreed
+    /// hashlock `H`), or `None` if the leg is not yet spent / no matching push is
+    /// visible yet. TRUST-MINIMISING: the taker learns the secret from the CHAIN
+    /// and validates it here (`sha256(push) == H`) — never on a counterparty's word
+    /// — so a withheld or bogus off-chain "secret" message can never mislead it.
+    pub fn read_seq_preimage(
+        seq_esplora: &str,
+        seq_leg_txid: &str,
+        vout: u32,
+        hash_hex: &str,
+    ) -> Result<Option<String>, Error> {
+        use crate::bitcoin::hashes::{sha256, Hash as _};
+
+        let client = client()?;
+        let base = seq_esplora.trim_end_matches('/');
+        let want = hash_hex.to_lowercase();
+
+        // 1. Is the funded outpoint spent, and by which tx? A not-yet-spent (or
+        //    transiently unreadable) outpoint is "no preimage yet", not an error.
+        let os: serde_json::Value = match client
+            .get(format!("{base}/tx/{seq_leg_txid}/outspend/{vout}"))
+            .send()
+            .map_err(map)?
+            .json()
+        {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        if !os.get("spent").and_then(|s| s.as_bool()).unwrap_or(false) {
+            return Ok(None);
+        }
+        let Some(spend_txid) = os.get("txid").and_then(|t| t.as_str()) else { return Ok(None) };
+
+        // 2. Fetch the spending tx and scan every input's scriptSig (and witness,
+        //    defensively) for the 32-byte push that hashes to H.
+        let stx: serde_json::Value =
+            client.get(format!("{base}/tx/{spend_txid}")).send().map_err(map)?.json().map_err(map)?;
+        let is_hex = |s: &str| s.len() >= 2 && s.chars().all(|c| c.is_ascii_hexdigit());
+        if let Some(vins) = stx.get("vin").and_then(|v| v.as_array()) {
+            for vin in vins {
+                let mut pushes: Vec<String> = vec![];
+                if let Some(asm) = vin.get("scriptsig_asm").and_then(|a| a.as_str()) {
+                    // asm interleaves opcode names (OP_PUSHBYTES_32, …) with hex data
+                    // pushes; the opcode names contain non-hex letters and are skipped.
+                    for tok in asm.split_whitespace() {
+                        if is_hex(tok) {
+                            pushes.push(tok.to_lowercase());
+                        }
+                    }
+                }
+                if let Some(wit) = vin.get("witness").and_then(|w| w.as_array()) {
+                    for w in wit.iter().filter_map(|w| w.as_str()) {
+                        if is_hex(w) {
+                            pushes.push(w.to_lowercase());
+                        }
+                    }
+                }
+                for p in pushes {
+                    if p.len() == 64 {
+                        if let Ok(bytes) = Vec::<u8>::from_hex(&p) {
+                            let h = sha256::Hash::hash(&bytes).to_byte_array().to_lower_hex_string();
+                            if h == want {
+                                return Ok(Some(p));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Async transport (wasm / web): the same reveal gate + broadcast + SEQ tip.

@@ -54,15 +54,15 @@ impl Contract {
         ticker: String,
         version: u8,
     ) -> Result<Arc<Self>, LwkError> {
-        let inner = lwk_wollet::Contract {
-            entity: lwk_wollet::Entity::Domain(domain),
-            issuer_pubkey: Vec::<u8>::from_hex(issuer_pubkey)
+        let inner = lwk_wollet::Contract::from_parts(
+            lwk_wollet::Entity::Domain(domain),
+            Vec::<u8>::from_hex(issuer_pubkey)
                 .map_err(|e| format!("invalid issuer pubkey: {e}"))?,
             name,
             precision,
             ticker,
             version,
-        };
+        );
         inner.validate()?; // TODO validate should be the constructor
         Ok(Arc::new(Self { inner }))
     }

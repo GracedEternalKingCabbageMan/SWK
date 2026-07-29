@@ -1,11 +1,12 @@
 //! Cross-chain (BTC <-> Sequentia-asset) HTLC swap — wasm bindings for the web wallet.
 //!
-//! Exposes the kit's cross-chain glue ([`lwk_wollet::btc::xchain`]) so the web
-//! wallet's `xswap.js` can be retired. The taker (Alice) holds BTC, wants the SEQ
-//! asset: fund the BTC HTLC, quote+propose to the maker, independently anchor-verify
-//! the SEQ leg from the wallet's OWN node, then claim it (revealing the preimage).
-//! The recovery phrase is passed per signing call (as elsewhere in the web wallet);
-//! the non-HD swap secret is sealed at rest via `sealState`/`openState`.
+//! Exposes the kit's cross-chain glue ([`lwk_wollet::btc::xchain`]): the swap
+//! secret, the HTLC spend-key derivation, the BTC HTLC and the Sequentia-leg
+//! redeemScript, the Sequentia-leg claim, and the BTC claim/refund. Most of it is pure
+//! crypto (no I/O); the four OWN-NODE reads at the end of this file are the
+//! exception, and they are the fund-safety surface — see the section header
+//! there. The recovery phrase is passed per signing call, as elsewhere in the web
+//! wallet.
 
 use lwk_wollet::bitcoin::hex::FromHex;
 use lwk_wollet::bitcoin::ScriptBuf;
@@ -88,8 +89,9 @@ pub fn xchain_seq_claim_fee(rate: u64, seq_feerate_native: u64) -> Result<u64, E
     xchain::seq_claim_fee_atoms(rate, seq_feerate_native).map_err(to_err)
 }
 
-/// Build the SEQ claim tx (reveals the preimage). Only after the reveal gate
-/// passes. Returns the raw Elements tx hex for [`Self::seq_broadcast`].
+/// Build the Sequentia-leg claim tx (reveals the preimage). Only after the reveal gate
+/// passes. Returns the raw Elements tx hex; broadcasting it is the caller's job
+/// (`lwk_wollet::btc::xchain::asyncr::seq_broadcast` on the Rust side).
 #[wasm_bindgen(js_name = xchainSeqClaim)]
 #[allow(clippy::too_many_arguments)]
 pub fn xchain_seq_claim(
@@ -182,110 +184,79 @@ pub fn xchain_btc_claim(
     htlc::build_claim_tx(&redeem, &spend, &preimage, &sk).map_err(to_err)
 }
 
-/// Seal the swap-state JSON (incl. the non-HD secret) under a passphrase; base64.
-#[wasm_bindgen(js_name = xchainSealState)]
-pub fn xchain_seal_state(state_json: &str, passphrase: &str) -> Result<String, Error> {
-    let state: xchain::XchainSwapState = serde_json::from_str(state_json).map_err(|e| Error::Generic(e.to_string()))?;
-    xchain::seal_state(&state, passphrase).map_err(to_err)
-}
+// --- OWN-NODE reads: THE FUND-SAFETY SURFACE ----------------------------------
+//
+// ⚠ THESE FOUR ARE NOT RFQ CODE. DO NOT SWEEP THEM.
+//
+// They were previously methods on a `XchainSwap` wasm class that ALSO carried the
+// retired RFQ rail's markets/quote/propose/swap_status. Deleting the RFQ rail by
+// CONTAINER took these with it, which left `lwk_wollet::btc::xchain::asyncr` —
+// including verify_seq_leg_safe, the anchor reveal gate — reachable from no
+// consumer at all, and the browser taker with no way to reach the audited Rust
+// gate. Removal must be decided by reachability from a live entry point, never by
+// which struct a function happened to live in.
+//
+// They are free functions now precisely so no future container deletion can take
+// them again. Each takes the endpoint it reads explicitly: these are the WALLET'S
+// OWN nodes, and the whole point of the gate is that it never consults the
+// counterparty.
 
-/// Open a sealed swap state; returns the state JSON.
-#[wasm_bindgen(js_name = xchainOpenState)]
-pub fn xchain_open_state(sealed: &str, passphrase: &str) -> Result<String, Error> {
-    let state = xchain::open_state(sealed, passphrase).map_err(to_err)?;
-    serde_json::to_string(&state).map_err(|e| Error::Generic(e.to_string()))
-}
-
-// --- the daemon + node interactions (async) ------------------------------------
-
-/// A configured cross-chain session: the daemon (XchainService), the wallet's OWN
-/// Sequentia esplora, and its OWN testnet4 esplora (the anchor gate reads only
-/// these — never the maker).
-#[wasm_bindgen]
-pub struct XchainSwap {
-    daemon: String,
+/// THE ANCHOR REVEAL GATE, evaluated from the wallet's OWN nodes. Returns
+/// `AnchorEvidence` (`{ ok, depth, seqAnchorHeight, ... }`). Reveal only when ok:
+/// the Sequentia block holding the asset leg must anchor at or above the
+/// Bitcoin-leg height, so a Bitcoin reorg that could undo the BTC lock also undoes
+/// the asset leg. This is the browser taker's entry to the audited Rust gate.
+#[wasm_bindgen(js_name = xchainVerifySeqLeg)]
+pub async fn xchain_verify_seq_leg(
     seq_esplora: String,
     t4_api: String,
+    seq_block_hash: String,
+    btc_leg_height: i64,
+    min_depth: i64,
+) -> Result<JsValue, Error> {
+    let e = xchain::asyncr::verify_seq_leg_safe(
+        &seq_esplora,
+        &seq_block_hash,
+        btc_leg_height,
+        &t4_api,
+        min_depth,
+    )
+    .await
+    .map_err(to_err)?;
+    js(&e)
 }
 
-#[wasm_bindgen]
-impl XchainSwap {
-    #[wasm_bindgen(constructor)]
-    pub fn new(daemon: String, seq_esplora: String, t4_api: String) -> XchainSwap {
-        XchainSwap { daemon, seq_esplora, t4_api }
-    }
+/// Whether there is safe margin left before the Sequentia-leg CLTV refund height,
+/// read from the wallet's own Sequentia tip. Refuse to reveal the preimage when
+/// this is false: claiming inside the margin races the counterparty's refund.
+#[wasm_bindgen(js_name = xchainClaimDeadlineOk)]
+pub async fn xchain_claim_deadline_ok(seq_esplora: String, seq_locktime: u32, margin: i64) -> bool {
+    xchain::asyncr::claim_deadline_ok(&seq_esplora, seq_locktime, margin).await
+}
 
-    /// The maker's cross-chain markets (array of `{btcAsset, seqAsset, name, ...}`).
-    pub async fn markets(&self) -> Result<JsValue, Error> {
-        let m = xchain::asyncr::xchain_markets(&self.daemon).await.map_err(to_err)?;
-        js(&m)
-    }
+/// Broadcast a raw Sequentia-leg (Elements) claim tx hex; returns the txid.
+#[wasm_bindgen(js_name = xchainSeqBroadcast)]
+pub async fn xchain_seq_broadcast(seq_esplora: String, tx_hex: String) -> Result<String, Error> {
+    xchain::asyncr::seq_broadcast(&seq_esplora, &tx_hex)
+        .await
+        .map_err(to_err)
+}
 
-    /// Quote buying `seq_amount` of `seq_asset` with BTC.
-    pub async fn quote(&self, seq_asset: String, seq_amount: u64) -> Result<JsValue, Error> {
-        let q = xchain::asyncr::xchain_quote(&self.daemon, &seq_asset, seq_amount).await.map_err(to_err)?;
-        js(&q)
-    }
-
-    /// Propose the swap with the funded BTC leg. Persist `swapId` from the result
-    /// BEFORE anything else; never auto-retry (the quote is single-use).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn propose(
-        &self,
-        quote_id: String,
-        hash: String,
-        btc_txid: String,
-        btc_vout: u32,
-        btc_height: i64,
-        btc_redeem_script: String,
-        btc_amount: u64,
-        btc_asset_id: String,
-        taker_seq_claim_pub: String,
-        taker_btc_refund_pub: String,
-    ) -> Result<JsValue, Error> {
-        let leg = xchain::BtcLeg::new(&btc_txid, btc_vout, btc_height, &btc_redeem_script, btc_amount, &btc_asset_id);
-        let accepted =
-            xchain::asyncr::xchain_propose(&self.daemon, &quote_id, &hash, &leg, &taker_seq_claim_pub, &taker_btc_refund_pub)
-                .await
-                .map_err(to_err)?;
-        js(&accepted)
-    }
-
-    /// Poll a swap's status by id (tolerates a 404: the maker's state is in-memory).
-    pub async fn swap_status(&self, swap_id: String) -> Result<JsValue, Error> {
-        let s = xchain::asyncr::xchain_swap_status(&self.daemon, &swap_id).await.map_err(to_err)?;
-        js(&s)
-    }
-
-    /// THE REVEAL GATE, evaluated from the wallet's OWN nodes. Returns
-    /// `AnchorEvidence` (`{ ok, depth, seqAnchorHeight, ... }`). Only reveal when ok.
-    pub async fn verify_seq_leg(&self, seq_block_hash: String, btc_leg_height: i64, min_depth: i64) -> Result<JsValue, Error> {
-        let e = xchain::asyncr::verify_seq_leg_safe(&self.seq_esplora, &seq_block_hash, btc_leg_height, &self.t4_api, min_depth)
-            .await
-            .map_err(to_err)?;
-        js(&e)
-    }
-
-    /// Whether there is safe margin before the SEQ-leg CLTV refund height (read from
-    /// the wallet's own SEQ tip). Refuse to reveal when false.
-    pub async fn claim_deadline_ok(&self, seq_locktime: u32, margin: i64) -> bool {
-        xchain::asyncr::claim_deadline_ok(&self.seq_esplora, seq_locktime, margin).await
-    }
-
-    /// Broadcast a raw SEQ (Elements) claim tx hex; returns the txid.
-    pub async fn seq_broadcast(&self, tx_hex: String) -> Result<String, Error> {
-        xchain::asyncr::seq_broadcast(&self.seq_esplora, &tx_hex).await.map_err(to_err)
-    }
-
-    /// Locate the BTC HTLC funding output by its P2SH spk on testnet4:
-    /// `{ vout, valueSats, height, confirmations }`.
-    pub async fn find_btc_funding(&self, txid: String, p2sh_spk_hex: String) -> Result<JsValue, Error> {
-        let f = lwk_wollet::btc::wallet_async::find_htlc_funding(&self.t4_api, &txid, &p2sh_spk_hex).await.map_err(to_err)?;
-        js(&serde_json::json!({
-            "vout": f.vout,
-            "valueSats": f.value_sats,
-            "height": f.height,
-            "confirmations": f.confirmations,
-        }))
-    }
+/// Locate the BTC HTLC funding output by its P2SH scriptPubKey on testnet4:
+/// `{ vout, valueSats, height, confirmations }`.
+#[wasm_bindgen(js_name = xchainFindBtcFunding)]
+pub async fn xchain_find_btc_funding(
+    t4_api: String,
+    txid: String,
+    p2sh_spk_hex: String,
+) -> Result<JsValue, Error> {
+    let f = lwk_wollet::btc::wallet_async::find_htlc_funding(&t4_api, &txid, &p2sh_spk_hex)
+        .await
+        .map_err(to_err)?;
+    js(&serde_json::json!({
+        "vout": f.vout,
+        "valueSats": f.value_sats,
+        "height": f.height,
+        "confirmations": f.confirmations,
+    }))
 }

@@ -71,6 +71,12 @@ pub async fn broadcast(t4_api: &str, tx_hex: &str) -> Result<String, Error> {
 }
 
 /// Find the HTLC funding output in `txid` by matching `p2sh_spk_hex` (async).
+//
+// INTENTIONALLY RETAINED, NOT DEAD CODE, on the same grounds as
+// `btc::xchain::asyncr`: this locates the BTC HTLC output a cross-chain taker must
+// confirm before it commits the asset leg, and it is reached from wasm as
+// `xchainFindBtcFunding`. It was swept once already, as collateral damage from
+// deleting the retired RFQ rail by container rather than by reachability.
 pub async fn find_htlc_funding(t4_api: &str, txid: &str, p2sh_spk_hex: &str) -> Result<HtlcFunding, Error> {
     let client = tx::client()?;
     let base = t4_api.trim_end_matches('/');

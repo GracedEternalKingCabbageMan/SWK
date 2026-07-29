@@ -131,8 +131,8 @@ Changes by file:
     HTLC key derivation (canonical absolute paths outside the receive/change
     branches, plus a legacy relative mode recorded in persisted state), the
     swap secret, the reveal gate, claim-deadline gate, rate-derived
-    Sequentia-leg claim fee, and the `XchainSwapState` persisted encrypted with
-    `age` (persist-before-fund). The reveal gate is anchoring supremacy in
+    Sequentia-leg claim fee, and the Sequentia-leg claim + broadcast (plus the
+    on-chain preimage read). The reveal gate is anchoring supremacy in
     code: the taker reveals the preimage only after ITS OWN nodes confirm the
     Sequentia funding's Bitcoin anchor height is at or above the BTC funding
     height, `anchorstatus` is ok, and the anchor is D confirmations deep
@@ -156,10 +156,9 @@ The fork is not published to npm; consumers build `pkg/` with `wasm-pack`.
 - `src/btc_wallet.rs`: `BtcWallet` (address, scan, prepare, sign+broadcast) with
   `BtcScan` / `BtcPrepared` result types: the Bitcoin testnet4 half of a
   dual-chain browser wallet.
-- `src/xchain.rs`: `XchainSwap` plus `xchain*` helper functions (secret and key
-  derivation, BTC HTLC, Sequentia redeem script, anchor-gated claim, refund,
-  `xchainSealState`/`xchainOpenState` for encrypted persistence) wrapping
-  `lwk_wollet::btc::xchain` for the web wallet.
+- `src/xchain.rs`: the `xchain*` helper functions (secret and key derivation,
+  BTC HTLC, Sequentia redeem script, Sequentia claim, BTC claim and refund)
+  wrapping `lwk_wollet::btc::xchain` for the web wallet.
 - `src/seqdex_swap.rs`: `SwapRequest` (same-chain SeqDEX swap proposal).
 - `src/seqdex_htlc.rs`: `generateSwapSecret`, `htlcKeypair`,
   `buildSeqHtlcRedeemScript`, `buildSeqHtlcClaimTx`, `buildSeqHtlcRefundTx`.

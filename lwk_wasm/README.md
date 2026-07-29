@@ -4,7 +4,7 @@
 > **Sequentia note (SWK fork).** On this branch the crate builds with the
 > Sequentia features enabled (`lwk_wollet` with `sequentia` + `btc-async`) and
 > additionally exposes: `Network.sequentiaTestnet()` and `Network.isSequentia()`,
-> the Bitcoin testnet4 `BtcWallet` (dual-chain wallets), `XchainSwap` and the
+> the Bitcoin testnet4 `BtcWallet` (dual-chain wallets), the
 > `xchain*` helpers (cross-chain BTC-to-asset HTLC swaps), SeqDEX bindings
 > (`SwapRequest`, `buildSeqHtlc*`), `TxBuilder.feeAsset()` (any-asset fees),
 > `addStakeOutput()` and `Signer.stakerPublicKey()` (staking). See

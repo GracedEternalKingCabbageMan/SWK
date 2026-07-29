@@ -67,7 +67,7 @@ In code (`lwk_wollet/src/btc/`, cargo features `btc`, `btc-async`,
 - `btc::xchain` is the cross-chain swap glue: HTLC key derivation, the swap
   secret, the anchor-verifying reveal gate (the taker checks the Sequentia leg's
   Bitcoin anchor against its OWN nodes, never the counterparty's), the claim
-  deadline gate, and age-encrypted persisted swap state.
+  deadline gate, and the Sequentia-leg claim + broadcast.
 
 ## Where SWK fits in the Sequentia ecosystem
 
@@ -98,7 +98,7 @@ and the vendored `rust-elements`; the other crates are upstream LWK.
 | `lwk_wollet` | The watch-only wallet core (CT descriptors, scanning, balances, PSET create/finalize). Sequentia additions: explicit-output handling, any-asset fees + RBF/CPFP rescue, staking output, SeqDEX swap/HTLC builders, and the whole Bitcoin parent-chain module (`src/btc/`). |
 | `lwk_common` | Shared types. Sequentia addition: `Network::sequentia_testnet()` and Sequentia address parameters. |
 | `lwk_signer` | Software signer (BIP39 mnemonic to PSET signatures). Unchanged; signs Sequentia PSETs as-is. |
-| `lwk_wasm` | WebAssembly bindings (wasm-bindgen). Sequentia additions: `Network.sequentiaTestnet()`, `BtcWallet`, `XchainSwap`, SeqDEX bindings, staking and any-asset-fee bindings. |
+| `lwk_wasm` | WebAssembly bindings (wasm-bindgen). Sequentia additions: `Network.sequentiaTestnet()`, `BtcWallet`, the `xchain*` HTLC helpers, SeqDEX bindings, staking and any-asset-fee bindings. |
 | `lwk_bindings` | UniFFI bindings (Python, Kotlin, Swift, C#, Go, C++). Upstream only: Sequentia APIs are not exposed here yet. |
 | `lwk_cli` / `lwk_app` / `lwk_rpc_model` / `lwk_tiny_jrpc` | JSON-RPC wallet server and CLI client. Upstream only: no `sequentia` network selector yet (networks: liquid, liquid-testnet, regtest). |
 | `lwk_jade`, `lwk_ledger`, `lwk_hwi` | Hardware-signer support (upstream; not wired to Sequentia flows). |
@@ -148,8 +148,8 @@ lwk_wollet = { features = ["btc-async"] }      # wasm / async apps
 
 `lwk_wasm` builds the kit to WebAssembly with the Sequentia features on
 (`sequentia` + `btc-async`), exposing among others `Network.sequentiaTestnet()`,
-`Network.isSequentia()`, the dual-chain `BtcWallet`, `XchainSwap` for cross-chain
-swaps, `TxBuilder.feeAsset()` / `addStakeOutput()` / `addExplicitRecipient()`,
+`Network.isSequentia()`, the dual-chain `BtcWallet`, the `xchain*` helpers for
+cross-chain swaps, `TxBuilder.feeAsset()` / `addStakeOutput()` / `addExplicitRecipient()`,
 and `Signer.stakerPublicKey()`.
 
 ```sh

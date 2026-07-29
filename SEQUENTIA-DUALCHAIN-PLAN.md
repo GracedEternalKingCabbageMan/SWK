@@ -1,9 +1,13 @@
 # SWK dual-chain plan: bring the Bitcoin parent-chain into the kit
 
-> **STATUS (2026-07-08): HISTORICAL PLAN. The dual-chain work is implemented.**
-> This document is kept as design history; the text below is the plan as
-> approved, not a description of the current code. What actually happened,
-> verified against the `sequentia` branch:
+> **STATUS (2026-07-08, refreshed 2026-07-25): HISTORICAL PLAN. The dual-chain
+> work is implemented.**
+> This document is kept as design history; the plan text below is the plan as
+> approved, not a description of the current code. Where the plan named a type
+> that no longer exists (the RFQ-era `XchainSwap` / `XchainSwapState`), the
+> wording describes the role instead of the deleted name, so no reader mistakes
+> it for present-day API. What actually happened, verified against the
+> `sequentia` branch:
 >
 > **Built as planned**
 > - The `btc` / `btc-async` / `btc-blocking` feature-gated module in
@@ -18,8 +22,10 @@
 >   blocking-vs-async build determinism locked by a parity test.
 > - Phase 4 cross-chain glue in `lwk_wollet/src/btc/xchain.rs` and
 >   `lwk_wasm/src/xchain.rs`: the self-verifying anchor gate (safety
->   requirement 1), persist-before-fund with age-encrypted `XchainSwapState`
->   (requirements 4 and 9), the rate-derived any-asset Sequentia-claim fee
+>   requirement 1), persist-before-fund over an age-encrypted swap-state type
+>   (requirements 4 and 9; that type was later removed together with the RFQ
+>   client, so persistence is now the caller's contract and the kit's `btc`
+>   features no longer pull `age`), the rate-derived any-asset Sequentia-claim fee
 >   (closed decision kept), BIP125 RBF + `/fee-estimates` fees, crash-recovery
 >   path modes (canonical deep HTLC paths with a recorded legacy `m/3/0` mode),
 >   and a claim-deadline gate (requirement 8). Live-validated read-only against
@@ -38,8 +44,10 @@
 > - No `SwSigner::sign_btc_psbt`: the btc module derives its BIP84 keychain
 >   directly (bip39 + bip32, byte-identical results) and does not depend on
 >   `lwk_signer`, keeping the wasm build free of the jade/ledger deps.
-> - No `DualChainWallet` wasm type: the wasm surface is `BtcWallet` +
->   `XchainSwap` alongside the existing `Wollet`, and consumers compose them.
+> - No `DualChainWallet` wasm type: the wasm surface is `BtcWallet` plus the
+>   free cross-chain functions in `lwk_wasm/src/xchain.rs` alongside the existing
+>   `Wollet`, and consumers compose them. (An `XchainSwap` wasm type did ship
+>   here; it was removed with the RFQ client.)
 >
 > **Not built (still open)**
 > - Phase 5 entirely: hardware-signer BTC routing, CPFP rescue for the BTC
@@ -135,8 +143,8 @@ Changes land in three existing crates. The `bitcoin` crate stays transitive.
 - `src/btc/htlc.rs` -- BTC-leg HTLC: P2SH address from redeemScript, fund tx, refund tx (the
   CLTV/ELSE branch with `nSequence=0xfffffffe`, `nLockTime`, legacy SIGHASH_ALL, manual
   scriptSig with the `OP_FALSE` branch selector). Port from `ambra_core/src/btc_htlc.rs`.
-- `src/btc/xchain.rs` -- serializable `XchainSwapState`; the self-verifying anchor gate; a thin
-  REST client for `/v1/xchain/{markets,quote,propose,swap}`. Port from `ambra_core/src/xchain.rs`.
+- `src/btc/xchain.rs` -- HTLC spend-key derivation and the swap secret; the self-verifying
+  anchor gate; the Sequentia-leg claim and broadcast. Port from `ambra_core/src/xchain.rs`.
 - `src/seqdex_htlc.rs` (modify) -- build the redeemScript ONCE chain-agnostically with
   `bitcoin::script::Builder` returning bytes; the Sequentia leg wraps the bytes for Elements.
 
@@ -199,8 +207,9 @@ guard so additive feature unification cannot pull blocking code into the wasm bu
    so the Sequentia leg is recoverable without the response.
 8. Claim deadline gate. Refuse to reveal the preimage once within a safety margin of `T_seq`
    (measured against the taker's own Sequentia tip), and steer to refund instead.
-9. Encrypt swap secrets at rest. `XchainSwapState` defines a cipher boundary (or an explicit
-   "secrets are caller-encrypted" contract); Ambra routes it through the platform keystore.
+9. Encrypt swap secrets at rest. The serializable swap state defines a cipher boundary (or an
+   explicit "secrets are caller-encrypted" contract); Ambra routes it through the platform
+   keystore.
 
 ## Phased plan
 
@@ -229,7 +238,7 @@ fixture gate (always runnable) plus a separately-tracked live-testnet acceptance
   address and balance parity with `btc.js` over fixtures; flag flipped; `btc.js` removed only
   after a clean window.
 - Phase 4 -- Cross-chain into the kit. BTC-leg HTLC fund/refund plus bindings; canonical
-  Sequentia-claim path with the legacy shim; serializable `XchainSwapState` with at-rest
+  Sequentia-claim path with the legacy shim; a serializable swap state with at-rest
   encryption; the self-verifying anchor gate; the SEQ-leg claim fee wired to the any-asset fee
   market (estimate from the fee asset's past acceptance rates; replaces the hardcoded 100000
   atoms, which can make a claim un-buildable for a high-value asset); dynamic BTC fee estimation

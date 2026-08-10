@@ -1,1 +1,118 @@
-AGENTS.md
+# SWK — Sequentia Wallet Kit
+
+A fork of Blockstream's LWK (Liquid Wallet Kit), taken at v0.18.1, adapted for Sequentia and for
+dual-chain Bitcoin. The crates keep their upstream `lwk_*` names; `upstream` points at
+`Blockstream/lwk`, and telling fork code from upstream code is the first question in most changes
+here.
+
+`README.md` is the front door and `SEQUENTIA.md` is the precise fork-delta list. `AGENTS.md` in
+this directory is the inherited upstream LWK style guide — its Rust conventions (error handling
+with `thiserror`, no `unwrap` outside tests, import grouping, naming, commit-message format,
+`cargo fmt`/`clippy`/`audit` invocations, the `just` recipes) still apply. It says nothing about
+Sequentia; this file covers that gap rather than repeating it.
+
+Node and consensus conventions live in the
+[`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) repo.
+
+## Branch
+
+**The default and development branch is `sequentia`.** There is no `origin/master`; the local
+`master` is a frozen pointer at the upstream fork point.
+
+The GitHub workflows trigger on pushes to `master` and on pull requests. Since `master` is frozen,
+**a direct push to `sequentia` runs no CI at all — only a PR does.** That is a concrete reason to
+route every change through a PR, beyond the recorded-reasoning one.
+
+## Build and test
+
+Toolchain is pinned in `rust-toolchain.toml` (1.85.0, with `wasm32-unknown-unknown`).
+
+```sh
+cargo build
+cargo test -p lwk_wollet --lib --features btc-blocking,btc-async btc
+cargo test -p lwk_wollet --lib --features sequentia seqdex
+cargo run -p lwk_wollet --example sequentia_sync
+```
+
+The `elements` dependency is patched workspace-wide to the vendored `rust-elements/` fork with its
+`sequentia` feature on. `README.md` records that this makes a number of upstream fixture tests
+fail; treat those as expected fork behaviour rather than as something you broke.
+
+## The WASM build, and who consumes it
+
+```sh
+cd lwk_wasm
+wasm-pack build --target web --release      # needs clang for the secp256k1 build
+```
+
+`--target web` is not optional. The output lands in `lwk_wasm/pkg/` (gitignored, never committed)
+and is consumed by
+[`sequentia-web-wallet`](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
+whose `index.html` imports a **default-exported `init`** from `./pkg/lwk_wasm.js` — a shape only
+the `web` target produces. The wallet symlinks or copies `lwk_wasm/pkg` into its own `pkg/`; the
+web wallet's README omits `--target web`, so trust this one.
+
+There is no `just` recipe and no npm script for the wasm build. The Sequentia features
+(`sequentia`, `openamp`, `adaptor`, `btc-async`) are compiled into `lwk_wasm` unconditionally, so
+no extra flags are needed.
+
+`ambra` also consumes this repo, but as a Rust path dependency on sibling crates rather than
+through wasm.
+
+## What the fork actually changes
+
+- **Sequentia is modelled as a custom Elements network.** A direct consequence: upstream's
+  `isRegtest()` returns **true** for Sequentia. Use `is_sequentia` instead. This is annotated in
+  the code and it is easy to get wrong.
+- **Explicit (unblinded) outputs are first-class.** Upstream skips them; under the `sequentia`
+  feature they count toward balance, coin selection and history. Change is emitted
+  **unconfidential** unless the wallet already holds a confidential UTXO. This mirrors Sequentia
+  being transparent by default with confidentiality opt-in — the opposite of Liquid, and the
+  opposite of what upstream LWK's own documentation assumes.
+- **Address parameters** use bech32 HRP `tb` (identical to Bitcoin testnet, which is what lets one
+  address serve both chains) and blech32 HRP `tsqb` for confidential addresses.
+- **The genesis hash is hardcoded** in the network constructor, and it feeds the BIP341 taproot
+  sighash. The testnet was re-genesised on 2026-07-05 and this value had to be updated. A stale
+  genesis hash silently breaks covenant signing rather than failing loudly.
+- **The vendored `rust-elements/` fork** adds the Bitcoin anchor to the block header and includes
+  it in the block hash. It is patched in via `[patch.crates-io]` and is not a workspace member.
+- **`bitcoin` is pinned to an exact version** (`=0.32.7`) specifically to stop HTLC redeemScript
+  bytes drifting. Do not loosen that pin.
+- **`btc-blocking` cannot target wasm32** and says so with a `compile_error!`. Use `btc-async` for
+  anything that must run in a browser.
+- Sequentia-specific modules exported from `lwk_wollet`: `btc`, `pos`, `adaptor`, `openamp`,
+  `seqdex_htlc`, `seqdex_swap`, `seqob_covenant`, plus `sequentia_stake_script` and the any-asset
+  fee builder. `README.md` and `SEQUENTIA.md` predate several of these and do not document them.
+
+## Cross-language contracts
+
+Several pieces here must stay byte-identical to counterparts outside this repo:
+
+- Swap wire format against the go-elements side in `seqdex` — explicit value and asset are dropped
+  on unconfidential swap inputs for exactly that reason.
+- HTLC redeem scripts, hence the exact `bitcoin` pin.
+- A test locks `build_signed_tx` output to be byte-identical between the `btc-blocking` and
+  `btc-async` drivers. Changes to the Bitcoin core path must keep both identical.
+- Build a `Contract` through `from_parts`, not a struct literal.
+
+## Retired API
+
+The RFQ client and the `XchainSwap` / `XchainSwapState` types were **deleted**. Commits and design
+documents from before that retirement describe an API that no longer exists; do not follow them as
+current.
+
+## Naming
+
+The network is **Sequentia**. The token is named **Sequence**, ticker SEQ (tSEQ on testnet). Never
+abbreviate the network as "SEQ".
+
+## Working in this repo
+
+- **Repository is public.** Never commit keys, seeds, wallet files, RPC credentials, `.env` files
+  or tokens.
+- **Commit author:**
+  `GracedEternalKingCabbageMan <151803062+GracedEternalKingCabbageMan@users.noreply.github.com>`
+- **Always open a pull request, then merge it yourself immediately.** The PR exists so the change
+  and its reasoning are recorded — and, here, so CI runs at all — not because anyone is waiting to
+  review it. There is no review process. If you are ever told to leave one specific PR open, that
+  applies to that PR only and never becomes the default.

@@ -81,6 +81,27 @@ impl Signer {
         Ok(child.public_key.to_string())
     }
 
+    /// Sign a message with the Sequentia STAKING key (m/2/0), in exactly the
+    /// form [`Self::sign_message`] returns for the master key: a recoverable
+    /// ECDSA signature over the Bitcoin signed-message digest, base64.
+    ///
+    /// This exists so a wallet can prove it controls the key its stake is bonded
+    /// to without the user copying anything by hand. The stake sits under
+    /// m/2/0, so a signature from the master key proves control of a DIFFERENT
+    /// key and says nothing about the stake; anyone verifying has to be able to
+    /// recover this key specifically.
+    ///
+    /// The secret never leaves Rust, as with the OpenAMP identity below.
+    #[wasm_bindgen(js_name = signMessageWithStakerKey)]
+    pub fn sign_message_with_staker_key(&self, message: &str) -> Result<String, Error> {
+        let path = bip32::DerivationPath::from(vec![
+            bip32::ChildNumber::Normal { index: 2 },
+            bip32::ChildNumber::Normal { index: 0 },
+        ]);
+        let signature = self.inner.sign_message(message, &path)?;
+        Ok(signature.to_string())
+    }
+
     /// Return keyorigin and xpub, like "[73c5da0a/84h/1h/0h]tpub..."
     #[wasm_bindgen(js_name = keyoriginXpub)]
     pub fn keyorigin_xpub(&self, bip: &Bip) -> Result<String, Error> {
@@ -292,6 +313,20 @@ mod tests {
         assert_eq!(signer.mnemonic(), mnemonic);
 
         assert_eq!(signer.sign_message("Hello, world!").unwrap(), "Hwlg40qLYZXEj9AoA3oZpfJMJPxaXzBL0+siHAJRhTIvSFiwSdtCsqxqB7TxgWfhqIr/YnGE4nagWzPchFJElTo=");
+
+        // The staking signature must recover to the STAKING key, not the master
+        // one: proving control of the wrong key would let a wallet claim a
+        // stake it does not own, or fail to claim one it does.
+        let staker_sig = signer.sign_message_with_staker_key("Hello, world!").unwrap();
+        assert_ne!(staker_sig, signer.sign_message("Hello, world!").unwrap());
+        let parsed = lwk_wollet::bitcoin::sign_message::MessageSignature::from_base64(&staker_sig)
+            .expect("staker signature parses");
+        let secp = lwk_wollet::bitcoin::secp256k1::Secp256k1::new();
+        let digest = lwk_wollet::bitcoin::sign_message::signed_msg_hash("Hello, world!");
+        let recovered = parsed
+            .recover_pubkey(&secp, digest)
+            .expect("staker signature recovers");
+        assert_eq!(recovered.to_string(), signer.staker_public_key().unwrap());
 
         // Test BIP85 derivation
         assert_eq!(

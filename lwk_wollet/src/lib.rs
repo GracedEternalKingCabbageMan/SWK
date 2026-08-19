@@ -120,6 +120,9 @@ pub mod registry;
 mod seqdex_htlc;
 #[cfg(feature = "sequentia")]
 mod seqob_covenant;
+// SEQUENTIA coinjoin: sign the coordinator's round transaction for our own inputs.
+#[cfg(feature = "sequentia")]
+mod coinjoin;
 #[cfg(feature = "sequentia")]
 mod seqdex_swap;
 // SEQUENTIA dual-chain: the Bitcoin parent-chain wallet + HTLC leg, so every
@@ -180,6 +183,8 @@ pub use crate::seqob_covenant::{
 };
 #[cfg(feature = "sequentia")]
 pub use crate::seqdex_swap::{SeqdexSwapRequest, SeqdexSwapRequestOpts, SeqdexUnblindedInput};
+#[cfg(feature = "sequentia")]
+pub use crate::coinjoin::{sign_coinjoin_inputs, CoinjoinInput};
 pub use crate::update::{DownloadTxResult, Update};
 pub use crate::util::EC;
 pub use crate::wollet::{Tip, Wollet, WolletBuilder};

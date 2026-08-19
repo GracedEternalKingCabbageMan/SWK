@@ -46,6 +46,9 @@ mod registry;
 mod secret_key;
 mod seqdex_htlc;
 mod seqob_covenant;
+// SEQUENTIA staking pools: join, move between, and (the half a descriptor wallet
+// cannot do alone) leave one.
+mod sequentia_delegation;
 mod seqdex_swap;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod serial;
@@ -144,6 +147,10 @@ pub use seqdex_htlc::{
     generate_swap_secret_js,
 };
 pub use seqob_covenant::{build_covenant_fill_tx_js, script_to_address};
+pub use sequentia_delegation::{
+    build_delegation_spend_tx_js, find_delegation_records_js, parse_delegation_script_js,
+    sequentia_delegation_script_js,
+};
 pub use seqdex_swap::SwapRequest;
 pub use signer::Signer;
 pub use store::{JsStorage, JsStoreLink, JsTestStore};

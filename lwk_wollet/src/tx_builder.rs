@@ -339,6 +339,36 @@ impl TxBuilder {
         self
     }
 
+    /// Add a Sequentia delegation record: lends this wallet's stake weight to
+    /// `signer_pubkey` while the output stays unspent, WITHOUT moving the staked
+    /// coins. `satoshi` is the record's own small value, recoverable by spending
+    /// it (which only the controller can do, and which needs nobody's
+    /// cooperation - that is what makes leaving a pool unilateral).
+    ///
+    /// This creates a FIRST delegation. Re-pointing an existing one must spend
+    /// the old record and create the new one in the same transaction, because
+    /// consensus permits at most one unspent record per controller; use
+    /// [`crate::build_delegation_spend_tx`] for that.
+    #[cfg(feature = "sequentia")]
+    pub fn add_delegation_output(
+        mut self,
+        controller_pubkey: &[u8],
+        signer_pubkey: &[u8],
+        satoshi: u64,
+    ) -> Self {
+        let asset = *self.network().policy_asset();
+        self.recipients.push(Recipient {
+            satoshi,
+            script_pubkey: crate::sequentia_delegation::sequentia_delegation_script(
+                controller_pubkey,
+                signer_pubkey,
+            ),
+            blinding_pubkey: None,
+            asset,
+        });
+        self
+    }
+
     /// Fee rate in sats/kvb
     /// Multiply sats/vb value by 1000 i.e. 1.0 sat/byte = 1000.0 sat/kvb
     pub fn fee_rate(mut self, fee_rate: Option<f32>) -> Self {

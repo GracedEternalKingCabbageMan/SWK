@@ -160,6 +160,41 @@ impl TxBuilder {
         Ok(self.inner.add_stake_output(&pubkey, csv, satoshi).into())
     }
 
+    /// Add a Sequentia delegation record: lends this wallet's stake weight to
+    /// `signer_pubkey` (33-byte hex) while the output stays unspent, WITHOUT
+    /// moving the staked coins, and without the pool ever being able to spend
+    /// them. `satoshi` is the record's own small value, which comes back when
+    /// the record is spent.
+    ///
+    /// This creates a FIRST delegation. Moving to a different pool must spend
+    /// the old record and create the new one in one transaction (consensus
+    /// permits at most one live record per controller); use
+    /// `buildDelegationSpendTx` with `rotateTo` for that, and for leaving.
+    #[wasm_bindgen(js_name = addDelegationOutput)]
+    pub fn add_delegation_output(
+        self,
+        controller_pubkey: &str,
+        signer_pubkey: &str,
+        satoshi: u64,
+    ) -> Result<TxBuilder, Error> {
+        let controller = lwk_wollet::sequentia_delegation::delegation_pubkey_from_hex(
+            controller_pubkey,
+            "controller",
+        )?;
+        let signer =
+            lwk_wollet::sequentia_delegation::delegation_pubkey_from_hex(signer_pubkey, "signer")?;
+        if controller == signer {
+            return Err(Error::Generic(
+                "delegating to your own staking key is what already happens with no record at all"
+                    .into(),
+            ));
+        }
+        Ok(self
+            .inner
+            .add_delegation_output(&controller, &signer, satoshi)
+            .into())
+    }
+
     /// Issue an asset
     ///
     /// There will be `asset_sats` units of this asset that will be received by

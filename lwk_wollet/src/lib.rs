@@ -120,6 +120,10 @@ pub mod registry;
 mod seqdex_htlc;
 #[cfg(feature = "sequentia")]
 mod seqob_covenant;
+// SEQUENTIA staking pools: build a delegation record, and (the part a descriptor
+// wallet cannot do on its own) spend one to re-point or leave a pool.
+#[cfg(feature = "sequentia")]
+pub mod sequentia_delegation;
 // SEQUENTIA coinjoin: sign the coordinator's round transaction for our own inputs.
 #[cfg(feature = "sequentia")]
 mod coinjoin;
@@ -168,6 +172,11 @@ pub use crate::wollet::DirectoryIdHash;
 
 // Re-export store types from lwk_common
 pub use crate::tx_builder::{BuiltTx, TxBuilder, WolletTxBuilder};
+#[cfg(feature = "sequentia")]
+pub use crate::sequentia_delegation::{
+    build_delegation_spend_tx, parse_delegation_script, sequentia_delegation_script,
+    DelegationSpendPlan,
+};
 #[cfg(feature = "sequentia")]
 pub use crate::tx_builder::sequentia_stake_script;
 #[cfg(feature = "sequentia")]

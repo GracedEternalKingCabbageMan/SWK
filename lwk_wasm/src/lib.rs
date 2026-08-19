@@ -14,6 +14,7 @@ mod blockdata;
 mod boltz;
 mod btc_wallet;
 mod xchain;
+mod coinjoin;
 mod contract;
 #[cfg(feature = "simplicity")]
 mod control_block;

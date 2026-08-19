@@ -196,7 +196,7 @@ fn witness_program_spk(version: u8, program: &[u8]) -> Result<Script, Error> {
 
 /// The p2wpkh scriptCode `OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY OP_CHECKSIG`,
 /// used as the BIP143 script_code for the segwit-v0 sighash.
-fn p2wpkh_script_code(pkh: &[u8; 20]) -> Script {
+pub(crate) fn p2wpkh_script_code(pkh: &[u8; 20]) -> Script {
     Builder::new()
         .push_opcode(opcodes::all::OP_DUP)
         .push_opcode(opcodes::all::OP_HASH160)
@@ -207,7 +207,7 @@ fn p2wpkh_script_code(pkh: &[u8; 20]) -> Script {
 }
 
 /// The p2wpkh scriptPubKey `OP_0 <pkh>` = `0014<pkh>`.
-fn p2wpkh_spk(pkh: &[u8; 20]) -> Vec<u8> {
+pub(crate) fn p2wpkh_spk(pkh: &[u8; 20]) -> Vec<u8> {
     let mut v = Vec::with_capacity(22);
     v.push(0x00);
     v.push(0x14);

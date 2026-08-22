@@ -26,8 +26,10 @@ on top of the upstream history, listed precisely in [SEQUENTIA.md](SEQUENTIA.md)
 - **Transparent-by-default handling**: Sequentia flips the Elements/Liquid
   default, so unblinded (explicit) outputs are ordinary wallet funds. Behind the
   `sequentia` cargo feature, explicit outputs participate in balance, coin
-  selection, and history, and change is sent unblinded when no confidential
-  input forces blinding. Confidential transactions remain available, opt-in.
+  selection, and history, and change is sent unblinded unless the wallet holds
+  a confidential UTXO (Elements requires a blinded output to balance a blinded
+  input, and coin selection may pick one). Confidential transactions remain
+  available, opt-in.
 - **The dual-chain kit**: every standard Sequentia wallet is also a Bitcoin
   (testnet4) wallet, from one seed. Behind the `btc` cargo features, SWK ships a
   Bitcoin parent-chain wallet (BIP84 P2WPKH: scan, balance, send, fee estimates)
@@ -42,6 +44,20 @@ on top of the upstream history, listed precisely in [SEQUENTIA.md](SEQUENTIA.md)
 - **SeqDEX primitives**: the same-chain atomic-swap `SeqdexSwapRequest` builder
   and the Sequentia-leg HTLC (redeem script, claim, refund) for cross-chain
   BTC-to-asset swaps, byte-compatible with the SeqDEX daemon.
+- **SeqOB covenant orders**: `seqob_covenant` assembles the raw FILL and REFUND
+  transactions for a resting passive-CLOB covenant order (a taproot script-path
+  input with no signature, plus the taker's own key-path funding inputs).
+- **Staking-pool delegation**: `TxBuilder::add_delegation_output` creates a
+  delegation record and `sequentia_delegation` spends one (leave a pool, or
+  re-point to another signer in the same transaction).
+- **CoinJoin**: `coinjoin::sign_coinjoin_inputs` signs the wallet's own P2WPKH
+  inputs of a coordinator-built seqcj round transaction.
+- **OpenAMP restricted assets** (feature `openamp`): AID derivation, the tagged
+  hash for non-spending signatures, client-side enclave-sighash recomputation
+  and spend decoding, and a typed HTTP client for the OpenAMP service.
+- **Adaptor signatures** (feature `adaptor`): BIP340 Schnorr adaptor signatures
+  (`adaptor_sign` / `adaptor_verify` / `adaptor_complete` / `adaptor_extract`)
+  coupling the two legs of a BTC-to-restricted-asset swap. Not yet audited.
 
 ## The dual-chain principle
 
@@ -73,16 +89,16 @@ In code (`lwk_wollet/src/btc/`, cargo features `btc`, `btc-async`,
 
 | Repo | One-liner |
 |---|---|
-| [`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) | The Sequentia node (`elementsd` fork of Elements 23.3.3): consensus, anchoring, proof of stake, open fee market, plus the canonical protocol documentation in `doc/sequentia/`. |
+| [`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) | The Sequentia node, Sequentia Core (`sequentiad`, a fork of Elements 23.3.3): consensus, anchoring, proof of stake, open fee market, plus the canonical protocol documentation in `doc/sequentia/`. |
 | [`SWK`](https://github.com/GracedEternalKingCabbageMan/SWK) | Sequentia Wallet Kit: a fork of Blockstream LWK, with Rust wallet library, CLI, and WASM bindings for building Sequentia (and Bitcoin testnet4) wallets. |
-| [`sequentia-web-wallet`](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet) | Proof-of-concept browser wallet built on SWK, live at https://sequentiatestnet.com/wallet. |
+| [`sequentia-web-wallet`](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet) | Proof-of-concept browser wallet built on SWK, live at https://sequentiatestnet.com/wallet/. |
 | [`ambra`](https://github.com/GracedEternalKingCabbageMan/ambra) | Ambra: non-custodial dual-chain (Bitcoin testnet4 + Sequentia) mobile wallet: Flutter UI over a Rust core built on SWK. |
 | [`seqdex`](https://github.com/GracedEternalKingCabbageMan/seqdex) | SeqDEX: non-custodial atomic-swap DEX: P2P order book (seqob), same-chain swaps, and cross-chain BTC↔asset swaps made safe by Bitcoin anchoring. |
 | [`sequentia-electrs`](https://github.com/GracedEternalKingCabbageMan/sequentia-electrs) | The electrs fork: Rust indexer + Esplora REST API for Sequentia and its Bitcoin testnet4 parent chain. |
 
 Known consumers of SWK today:
 
-- **sequentia-web-wallet** (live at https://sequentiatestnet.com/wallet) uses the
+- **sequentia-web-wallet** (live at https://sequentiatestnet.com/wallet/) uses the
   `lwk_wasm` bindings compiled to WebAssembly, all client-side.
 - **Ambra** (mobile) uses a Rust core (`ambra_core`) that depends on
   `lwk_wollet` with features `sequentia`, `esplora`, `btc-blocking`, plus
@@ -91,18 +107,21 @@ Known consumers of SWK today:
 ## Workspace crates
 
 Sequentia changes are concentrated in `lwk_common`, `lwk_wollet`, `lwk_wasm`,
-and the vendored `rust-elements`; the other crates are upstream LWK.
+and the vendored `rust-elements`; the other crates are upstream LWK, apart from
+a `Contract::from_parts` call site in `lwk_app` and `lwk_bindings` and one
+Sequentia example in `lwk_simplicity`.
 
 | Crate | What it is |
 |---|---|
-| `lwk_wollet` | The watch-only wallet core (CT descriptors, scanning, balances, PSET create/finalize). Sequentia additions: explicit-output handling, any-asset fees + RBF/CPFP rescue, staking output, SeqDEX swap/HTLC builders, and the whole Bitcoin parent-chain module (`src/btc/`). |
+| `lwk_wollet` | The watch-only wallet core (CT descriptors, scanning, balances, PSET create/finalize). Sequentia additions: explicit-output handling, any-asset fees + RBF/CPFP rescue, staking output, SeqDEX swap/HTLC builders, SeqOB covenant fill/refund, staking-pool delegation, CoinJoin input signing, the OpenAMP client (feature `openamp`), adaptor signatures (feature `adaptor`), and the whole Bitcoin parent-chain module (`src/btc/`). |
 | `lwk_common` | Shared types. Sequentia addition: `Network::sequentia_testnet()` and Sequentia address parameters. |
 | `lwk_signer` | Software signer (BIP39 mnemonic to PSET signatures). Unchanged; signs Sequentia PSETs as-is. |
-| `lwk_wasm` | WebAssembly bindings (wasm-bindgen). Sequentia additions: `Network.sequentiaTestnet()`, `BtcWallet`, the `xchain*` HTLC helpers, SeqDEX bindings, staking and any-asset-fee bindings. |
-| `lwk_bindings` | UniFFI bindings (Python, Kotlin, Swift, C#, Go, C++). Upstream only: Sequentia APIs are not exposed here yet. |
-| `lwk_cli` / `lwk_app` / `lwk_rpc_model` / `lwk_tiny_jrpc` | JSON-RPC wallet server and CLI client. Upstream only: no `sequentia` network selector yet (networks: liquid, liquid-testnet, regtest). |
+| `lwk_wasm` | WebAssembly bindings (wasm-bindgen). Sequentia additions: `Network.sequentiaTestnet()`, `BtcWallet`, the `xchain*` HTLC helpers, SeqDEX bindings, `buildCovenantFillTx` / `buildCovenantRefundTx`, delegation (`buildDelegationSpendTx`, `findDelegationRecords`), `coinjoinSignInputs` / `coinjoinUnblindOutputs`, the `Openamp` client and enclave helpers, `adaptor*`, staking and any-asset-fee bindings. |
+| `lwk_bindings` | UniFFI bindings (Python, Kotlin, Swift, C#, Go, C++). Upstream API surface (no Sequentia network exposed yet); only the `Contract::from_parts` call changed. |
+| `lwk_cli` / `lwk_app` / `lwk_rpc_model` / `lwk_tiny_jrpc` | JSON-RPC wallet server and CLI client. Upstream apart from `lwk_app`'s `Contract::from_parts` call: no `sequentia` network selector yet (networks: liquid, liquid-testnet, regtest). |
 | `lwk_jade`, `lwk_ledger`, `lwk_hwi` | Hardware-signer support (upstream; not wired to Sequentia flows). |
-| `lwk_boltz`, `lwk_payment_instructions`, `lwk_simplicity`, `amp2_mock`, `lwk_containers`, `lwk_test_util` | Upstream LWK crates (Boltz swaps, payment-URI parsing, Simplicity utilities, test infrastructure). Unmodified on this branch. |
+| `lwk_simplicity` | Upstream Simplicity utilities plus one Sequentia example, `examples/live_covenant.rs`, which derives and spends a Simplicity leaf on the live testnet. |
+| `lwk_boltz`, `lwk_payment_instructions`, `amp2_mock`, `lwk_containers`, `lwk_test_util` | Upstream LWK crates (Boltz swaps, payment-URI parsing, test infrastructure). Unmodified on this branch. |
 | `rust-elements` (vendored, not a workspace member) | Fork of the `elements` crate wired in via `[patch.crates-io]`, with a `sequentia` cargo feature for anchored headers, issuance denomination, and `tb`/`tsqb` address parsing. |
 
 ## Quick start (Rust)
@@ -147,10 +166,13 @@ lwk_wollet = { features = ["btc-async"] }      # wasm / async apps
 ## WASM (browser wallets)
 
 `lwk_wasm` builds the kit to WebAssembly with the Sequentia features on
-(`sequentia` + `btc-async`), exposing among others `Network.sequentiaTestnet()`,
-`Network.isSequentia()`, the dual-chain `BtcWallet`, the `xchain*` helpers for
-cross-chain swaps, `TxBuilder.feeAsset()` / `addStakeOutput()` / `addExplicitRecipient()`,
-and `Signer.stakerPublicKey()`.
+(`sequentia`, `openamp`, `adaptor`, `btc-async`), exposing among others
+`Network.sequentiaTestnet()`, `Network.isSequentia()`, the dual-chain
+`BtcWallet`, the `xchain*` helpers for cross-chain swaps,
+`TxBuilder.feeAsset()` / `addStakeOutput()` / `addExplicitRecipient()` /
+`addDelegationOutput()`, `Signer.stakerPublicKey()`, `buildCovenantFillTx()`,
+`buildDelegationSpendTx()`, `coinjoinSignInputs()`, the `Openamp` client, and
+the `adaptor*` functions.
 
 ```sh
 cd lwk_wasm
@@ -175,8 +197,8 @@ cargo test -p lwk_wollet --lib --features sequentia seqdex             # SeqDEX 
 Notes:
 
 - Unit tests run without any node or network access.
-- Known issue: a plain `cargo test -p lwk_wollet --lib` currently has around 20
-  failing upstream fixture tests. The workspace enables the vendored `elements`
+- Known issue: a plain `cargo test -p lwk_wollet --lib` currently has a number
+  of failing upstream fixture tests. The workspace enables the vendored `elements`
   crate's `sequentia` feature globally, which changes the transaction and
   header wire format, so upstream Liquid test vectors no longer deserialize.
   The Sequentia-specific test modules (`btc`, `seqdex_htlc`, `seqdex_swap`) all

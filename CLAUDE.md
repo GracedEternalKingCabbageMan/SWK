@@ -49,8 +49,7 @@ wasm-pack build --target web --release      # needs clang for the secp256k1 buil
 and is consumed by
 [`sequentia-web-wallet`](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
 whose `index.html` imports a **default-exported `init`** from `./pkg/lwk_wasm.js` — a shape only
-the `web` target produces. The wallet symlinks or copies `lwk_wasm/pkg` into its own `pkg/`; the
-web wallet's README omits `--target web`, so trust this one.
+the `web` target produces. The wallet symlinks or copies `lwk_wasm/pkg` into its own `pkg/`.
 
 There is no `just` recipe and no npm script for the wasm build. The Sequentia features
 (`sequentia`, `openamp`, `adaptor`, `btc-async`) are compiled into `lwk_wasm` unconditionally, so
@@ -80,9 +79,10 @@ through wasm.
   bytes drifting. Do not loosen that pin.
 - **`btc-blocking` cannot target wasm32** and says so with a `compile_error!`. Use `btc-async` for
   anything that must run in a browser.
-- Sequentia-specific modules exported from `lwk_wollet`: `btc`, `pos`, `adaptor`, `openamp`,
-  `seqdex_htlc`, `seqdex_swap`, `seqob_covenant`, plus `sequentia_stake_script` and the any-asset
-  fee builder. `README.md` and `SEQUENTIA.md` predate several of these and do not document them.
+- Sequentia-specific modules exported from `lwk_wollet`: `btc`, `adaptor`, `openamp`,
+  `seqdex_htlc`, `seqdex_swap`, `seqob_covenant`, `sequentia_delegation`, `coinjoin`, plus
+  `sequentia_stake_script` and the any-asset fee builder. `SEQUENTIA.md` documents each. `pos` is
+  upstream's point-of-sale module (feature `prices`), not proof of stake.
 
 ## Cross-language contracts
 

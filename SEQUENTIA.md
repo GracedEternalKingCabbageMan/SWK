@@ -12,11 +12,20 @@ testnet4). Protocol background lives in the node repo,
 https://github.com/GracedEternalKingCabbageMan/Sequentia, under `doc/sequentia/`.
 
 Crates NOT touched by the fork (still pure upstream): `lwk_signer`, `lwk_cli`,
-`lwk_app`, `lwk_bindings`, `lwk_jade`, `lwk_ledger`, `lwk_hwi`, `lwk_boltz`,
-`lwk_payment_instructions`, `lwk_simplicity`, `lwk_rpc_model`, `lwk_tiny_jrpc`,
-`lwk_containers`, `lwk_test_util`, `amp2_mock`. In particular `lwk_simplicity`
-is an upstream LWK crate that predates the fork, not a Sequentia addition, and
-the CLI/UniFFI surfaces have no Sequentia network selector yet.
+`lwk_jade`, `lwk_ledger`, `lwk_hwi`, `lwk_boltz`, `lwk_payment_instructions`,
+`lwk_rpc_model`, `lwk_tiny_jrpc`, `lwk_containers`, `lwk_test_util`,
+`amp2_mock`. The CLI/UniFFI surfaces have no Sequentia network selector yet.
+
+Crates touched only mechanically:
+
+- `lwk_app/src/lib.rs` and `lwk_bindings/src/contract.rs`: the `Contract`
+  struct literal became a `Contract::from_parts(...)` call, because the fork's
+  `Contract` (`lwk_wollet/src/contract.rs`) keeps the original registry JSON
+  beside its typed fields and is no longer built field by field.
+- `lwk_simplicity/examples/live_covenant.rs`: a Sequentia-specific example that
+  derives the address of a real Simplicity leaf (taproot leaf version 0xbe)
+  and finalizes a spend of it on the live testnet. `lwk_simplicity` itself is
+  an upstream LWK crate that predates the fork, not a Sequentia addition.
 
 ## Workspace (`Cargo.toml`)
 
@@ -80,14 +89,18 @@ New cargo features:
 - `btc-async` / `btc-blocking`: the two esplora transports over that core
   (wasm/async apps vs native blocking apps). `btc-blocking` on wasm32 is a
   compile error by design.
+- `openamp = ["reqwest"]`: the OpenAMP restricted-asset client and enclave
+  signing helpers.
+- `adaptor = []`: BIP340 Schnorr adaptor signatures.
 
 Changes by file:
 
 - `src/wollet.rs`, `src/pset_create.rs`, `src/update.rs` (feature `sequentia`):
   explicit (non-confidential) outputs are first-class wallet funds: they count
   in balance, coin selection, and history; wallet inputs may be explicit;
-  change is sent unblinded unless a confidential input is being spent (Elements
-  requires at least one blinded output to balance a blinded input). Also
+  change is sent unblinded unless the wallet holds any confidential UTXO
+  (Elements requires at least one blinded output to balance a blinded input,
+  and coin selection may pick one). Also
   `Wollet::explicit_utxos()` and a valid zero anchor in the placeholder header.
 - `src/tx_builder.rs`:
   - Any-asset fees: `TxBuilder::fee_asset(asset, rate)` pays the fee in any
@@ -101,6 +114,39 @@ Changes by file:
     `sequentia_stake_script()` and `TxBuilder::add_stake_output(staker_pubkey,
     csv, satoshi)` build the CSV-locked bonding output used to stake for block
     production.
+  - Staking pools: `TxBuilder::add_delegation_output()` pays the bare
+    delegation-record script (`"SEQDEL" OP_DROP <signer> OP_DROP <controller>
+    OP_CHECKSIG`) that lends the wallet's stake weight to a pool signer.
+- `src/sequentia_delegation.rs` (feature `sequentia`): spends a delegation
+  record, which no descriptor matches. `build_delegation_spend_tx()` either
+  reclaims the record (leave the pool) or re-points it to another signer in
+  the same transaction (consensus allows one live record per controller, so
+  the two steps must not be separate transactions). Also
+  `sequentia_delegation_script()` and `parse_delegation_script()`.
+- `src/seqob_covenant.rs` (feature `sequentia`): the raw-Elements FILL and
+  REFUND transaction assemblers for a resting SeqOB passive-CLOB covenant
+  order (`build_covenant_fill_tx()`, `build_covenant_refund_tx()`). The
+  covenant leaf, witness and fill recipe are produced and byte-verified by the
+  web wallet's JS; what JS cannot do is assemble a taproot script-path input
+  with no key signature next to the taker's own key-path funding inputs in the
+  consensus-fixed output order, which is what this module builds.
+- `src/coinjoin.rs` (feature `sequentia`): `sign_coinjoin_inputs()` signs the
+  wallet's own key-path P2WPKH inputs of a seqcj coordinator-built round
+  transaction (the Elements segwit-v0 sighash commits to confidential values,
+  which JS cannot compute). It refuses coins the derived key does not control
+  and never judges whether the round is worth signing; that check lives in the
+  wallet before the call.
+- `src/openamp.rs` (feature `openamp`): the OpenAMP restricted-asset client.
+  Crypto helpers (AID derivation `compute_aid()`, `tagged_hash()` for
+  non-spending signatures, `enclave_sighash()` + `decode_enclave_spend()` so a
+  wallet recomputes the enclave sighash itself and never blind-signs) and the
+  typed `OpenampClient` for the user / address / balance / transfer endpoints.
+- `src/adaptor.rs` (feature `adaptor`): BIP340 Schnorr adaptor signatures
+  (`adaptor_sign`, `adaptor_verify`, `adaptor_complete`, `adaptor_extract`),
+  built in-house on `secp256k1` point arithmetic because the vendored
+  `secp256k1-zkp` only ships an ECDSA adaptor module. Couples the two legs of a
+  BTC-to-restricted-asset swap. Must be independently audited before any
+  fund-bearing use.
 - `src/seqdex_swap.rs` (feature `sequentia`): `SeqdexSwapRequest`, the taker
   half of a SeqDEX same-chain atomic swap (unsigned unblinded PSETv2 plus
   revealed input blinders), wire-compatible with the SeqDEX daemon's
@@ -146,8 +192,9 @@ Changes by file:
 
 ## `lwk_wasm`
 
-Built with `lwk_wollet` features `sequentia` + `btc-async` (plus upstream
-defaults), so the npm-style `pkg/` output of this fork is Sequentia-enabled.
+Built with `lwk_wollet` features `sequentia`, `openamp`, `adaptor` and
+`btc-async` (plus upstream defaults), so the npm-style `pkg/` output of this
+fork is Sequentia-enabled.
 The fork is not published to npm; consumers build `pkg/` with `wasm-pack`.
 
 - `src/network.rs`: `Network.sequentiaTestnet()`; `Network.isSequentia()`
@@ -163,14 +210,26 @@ The fork is not published to npm; consumers build `pkg/` with `wasm-pack`.
 - `src/seqdex_htlc.rs`: `generateSwapSecret`, `htlcKeypair`,
   `buildSeqHtlcRedeemScript`, `buildSeqHtlcClaimTx`, `buildSeqHtlcRefundTx`.
 - `src/tx_builder.rs`: `feeAsset()` (any-asset fees), `addExplicitRecipient()`,
-  `addStakeOutput()`, `sequentiaStakeScript()`.
+  `addStakeOutput()`, `sequentiaStakeScript()`, `addDelegationOutput()`.
 - `src/wollet.rs`: explicit-UTXO and rescue (bump/replace/CPFP) bindings.
-- `src/signer.rs`: `Signer.stakerPublicKey()` (staking key at `m/2/0`).
+- `src/signer.rs`: `Signer.stakerPublicKey()` (staking key at `m/2/0`); the
+  OpenAMP enclave key and its signing at `m/5/0`.
+- `src/seqob_covenant.rs`: `buildCovenantFillTx`, `buildCovenantRefundTx`,
+  `covenantMakerAddress`, `covenantMakerDescriptor`, `scriptToAddress`.
+- `src/sequentia_delegation.rs`: `sequentiaDelegationScript`,
+  `parseDelegationScript`, `findDelegationRecords`, `buildDelegationSpendTx`.
+- `src/coinjoin.rs`: `coinjoinSignInputs`, `coinjoinUnblindOutputs`.
+- `src/openamp.rs`: the `Openamp` client class (`registerUser`, `getUser`,
+  `enclaveAddress`, `assetInfo`, `createTransfer`, `completeTransfer`) and
+  the free functions `openampComputeAid`, `openampTaggedHash`,
+  `enclaveSighash`, `decodeEnclaveSpend`.
+- `src/adaptor.rs`: `adaptorSign`, `adaptorVerify`, `adaptorComplete`,
+  `adaptorExtract`.
 
 The browser-wallet demo that used to live in `lwk_wasm/www/` was extracted to
 its own repository,
 [sequentia-web-wallet](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
-live at https://sequentiatestnet.com/wallet.
+live at https://sequentiatestnet.com/wallet/.
 
 ## Design invariants the fork keeps
 

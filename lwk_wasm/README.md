@@ -2,17 +2,21 @@
 # Liquid Wallet Kit for WASM
 
 > **Sequentia note (SWK fork).** On this branch the crate builds with the
-> Sequentia features enabled (`lwk_wollet` with `sequentia` + `btc-async`) and
-> additionally exposes: `Network.sequentiaTestnet()` and `Network.isSequentia()`,
-> the Bitcoin testnet4 `BtcWallet` (dual-chain wallets), the
-> `xchain*` helpers (cross-chain BTC-to-asset HTLC swaps), SeqDEX bindings
-> (`SwapRequest`, `buildSeqHtlc*`), `TxBuilder.feeAsset()` (any-asset fees),
-> `addStakeOutput()` and `Signer.stakerPublicKey()` (staking). See
+> Sequentia features enabled (`lwk_wollet` with `sequentia`, `openamp`,
+> `adaptor`, `btc-async`) and additionally exposes: `Network.sequentiaTestnet()`
+> and `Network.isSequentia()`, the Bitcoin testnet4 `BtcWallet` (dual-chain
+> wallets), the `xchain*` helpers (cross-chain BTC-to-asset HTLC swaps), SeqDEX
+> bindings (`SwapRequest`, `buildSeqHtlc*`), `TxBuilder.feeAsset()` (any-asset
+> fees), `addStakeOutput()` and `Signer.stakerPublicKey()` (staking),
+> `addDelegationOutput()` / `buildDelegationSpendTx()` (staking pools),
+> `buildCovenantFillTx()` / `buildCovenantRefundTx()` (SeqOB covenant orders),
+> `coinjoinSignInputs()` / `coinjoinUnblindOutputs()` (CoinJoin), the `Openamp`
+> client and `adaptor*` functions. See
 > [SEQUENTIA.md](../SEQUENTIA.md). This fork is NOT published to npm (the
 > `lwk_wasm` npm package is upstream LWK): build `pkg/` yourself with
 > `wasm-pack build --target web --release` (needs clang). The main consumer is
 > [sequentia-web-wallet](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
-> live at https://sequentiatestnet.com/wallet; the demo formerly in
+> live at https://sequentiatestnet.com/wallet/; the demo formerly in
 > `lwk_wasm/www/` moved to that repository.
 >
 > The upstream README follows.

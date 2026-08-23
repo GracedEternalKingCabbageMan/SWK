@@ -58,6 +58,16 @@ impl WalletTxOut {
         self.inner.unblinded.into()
     }
 
+    /// Whether this output has already been spent.
+    ///
+    /// The wallet knows; without it a caller has to diff the whole transaction
+    /// history against the UTXO set to find out. A staking reward that has been
+    /// spent must not be offered for conversion, which is what wants this.
+    #[wasm_bindgen(js_name = isSpent)]
+    pub fn is_spent(&self) -> bool {
+        self.inner.is_spent
+    }
+
     /// Return the wildcard index used to derive the address of this `WalletTxOut`.
     #[wasm_bindgen(js_name = wildcardIndex)]
     pub fn wildcard_index(&self) -> u32 {

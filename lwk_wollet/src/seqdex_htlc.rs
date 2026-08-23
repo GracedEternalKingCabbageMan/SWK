@@ -25,6 +25,7 @@
 //!
 //! ```text
 //! OP_IF
+//!     OP_SIZE <32> OP_EQUALVERIFY                                # preimage is exactly 32 bytes
 //!     OP_SHA256 <H> OP_EQUALVERIFY <claim_pub> OP_CHECKSIG       # redeem branch
 //! OP_ELSE
 //!     <locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP <refund_pub> OP_CHECKSIG  # refund
@@ -110,8 +111,17 @@ pub fn generate_swap_secret() -> SwapSecret {
 /// Build the Design-A HTLC redeemScript.
 ///
 /// Byte-identical to the daemon's `HashLock.LockScript` (`primitive.go`):
-/// `OP_IF OP_SHA256 <H> OP_EQUALVERIFY <claim_pub> OP_CHECKSIG OP_ELSE <locktime>
-/// OP_CHECKLOCKTIMEVERIFY OP_DROP <refund_pub> OP_CHECKSIG OP_ENDIF`.
+/// `OP_IF OP_SIZE <32> OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <claim_pub>
+/// OP_CHECKSIG OP_ELSE <locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP <refund_pub>
+/// OP_CHECKSIG OP_ENDIF`.
+///
+/// The size guard pins the preimage to the 32 bytes a Lightning hold settles with,
+/// so a counterparty cannot claim the chain leg by revealing a preimage of another
+/// length that the other side's hold can never be settled with. The wallet builds
+/// only this form and verifies a counterparty's leg by rebuilding it byte for
+/// byte: a leg locked to the older unguarded form is refused before anything is
+/// funded, which fails closed (the daemon-side verifiers accept both forms, and a
+/// daemon claims with whichever script the leg was actually locked to).
 ///
 /// - `hash`: 32-byte `H = sha256(secret)`.
 /// - `claim_pub`: 33-byte compressed pubkey that can spend the IF/redeem branch
@@ -146,6 +156,9 @@ pub fn build_htlc_redeem_script(
 
     let script = Builder::new()
         .push_opcode(opcodes::all::OP_IF)
+        .push_opcode(opcodes::all::OP_SIZE)
+        .push_int(32)
+        .push_opcode(opcodes::all::OP_EQUALVERIFY)
         .push_opcode(opcodes::all::OP_SHA256)
         .push_slice(hash)
         .push_opcode(opcodes::all::OP_EQUALVERIFY)
@@ -378,12 +391,13 @@ mod tests {
         let refund = Vec::<u8>::from_hex(REFUND_PUB).unwrap();
         let script = build_htlc_redeem_script(&h, &claim, &refund, 250).unwrap();
         let hex = script.as_bytes().to_hex();
-        // OP_IF(63) OP_SHA256(a8) PUSH32(20)<H> OP_EQUALVERIFY(88) PUSH33(21)<claim>
-        // OP_CHECKSIG(ac) OP_ELSE(67) <250 as scriptint = fa00>(02 fa00)
-        // OP_CLTV(b1) OP_DROP(75) PUSH33(21)<refund> OP_CHECKSIG(ac) OP_ENDIF(68)
+        // OP_IF(63) OP_SIZE(82) PUSH1(01)<20> OP_EQUALVERIFY(88) OP_SHA256(a8) PUSH32(20)<H>
+        // OP_EQUALVERIFY(88) PUSH33(21)<claim> OP_CHECKSIG(ac) OP_ELSE(67)
+        // <250 as scriptint = fa00>(02 fa00) OP_CLTV(b1) OP_DROP(75) PUSH33(21)<refund>
+        // OP_CHECKSIG(ac) OP_ENDIF(68)
         assert!(
-            hex.starts_with(&format!("63a820{H_HEX}88")),
-            "IF SHA256 PUSH32 <H> EQUALVERIFY: {hex}"
+            hex.starts_with(&format!("6382012088a820{H_HEX}88")),
+            "IF SIZE <32> EQUALVERIFY SHA256 PUSH32 <H> EQUALVERIFY: {hex}"
         );
         // 250 = 0xfa -> needs a high-byte guard -> scriptint "fa00", pushed as 02 fa00.
         assert!(hex.contains("6702fa00b175"), "ELSE <250> CLTV DROP: {hex}");
@@ -402,20 +416,26 @@ mod tests {
 
     #[test]
     fn redeem_script_byte_matches_daemon() {
-        // Golden vectors emitted by the SeqDEX daemon's HashLock.LockScript
-        // (pkg/xchain/primitive.go) for these exact inputs — proves byte-for-byte
-        // parity of the IF/SHA256/CLTV HTLC redeemScript across the Go txscript
-        // builder and the Rust elements Builder, including the CLTV scriptint
-        // encoding (small <=16, the high-byte-guard 250, and a 3-byte 1_000_000).
-        let h = Vec::<u8>::from_hex(H_HEX).unwrap();
-        let claim = Vec::<u8>::from_hex(CLAIM_PUB).unwrap();
-        let refund = Vec::<u8>::from_hex(REFUND_PUB).unwrap();
+        // The SeqDEX daemon's committed golden vectors (pkg/xchain/testdata/
+        // htlc_redeem_vectors.json, emitted by HashLock.LockScript) for fixed
+        // inputs: proves byte-for-byte parity of the guarded HTLC redeemScript
+        // across the Go txscript builder and the Rust elements Builder, including
+        // the CLTV scriptint edges (16 as OP_16, 17, 0x7f, 0x80, 0xffff, 5e8-1).
+        // Regenerate from the daemon fixture when it changes; never hand-edit.
         let cases = [
-            (17u32, "63a820a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90882102e8bdd7e8b1e7c1b8a8d3f2c5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5ac670111b1752103a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90ac68"),
-            (250u32, "63a820a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90882102e8bdd7e8b1e7c1b8a8d3f2c5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5ac6702fa00b1752103a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90ac68"),
-            (1_000_000u32, "63a820a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90882102e8bdd7e8b1e7c1b8a8d3f2c5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5ac670340420fb1752103a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 16u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac6760b1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 17u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac670111b1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 127u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac67017fb1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 128u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac67028000b1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 65535u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac6703ffff00b1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 499999999u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac6704ff64cd1db1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("abababababababababababababababababababababababababababababababab", "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", 44300u32, "6382012088a820abababababababababababababababababababababababababababababababab8821034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaac67030cad00b1752102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27ac68"),
+            ("3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c", "032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991", "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b", 850000u32, "6382012088a8203c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c8821032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991ac670350f80cb17521029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895bac68"),
         ];
-        for (lt, want) in cases {
+        for (h, claim, refund, lt, want) in cases {
+            let h = Vec::<u8>::from_hex(h).unwrap();
+            let claim = Vec::<u8>::from_hex(claim).unwrap();
+            let refund = Vec::<u8>::from_hex(refund).unwrap();
             let script = build_htlc_redeem_script(&h, &claim, &refund, lt).unwrap();
             assert_eq!(script.as_bytes().to_hex(), want, "locktime {lt}");
         }

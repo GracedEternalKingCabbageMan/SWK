@@ -4,7 +4,7 @@
 //! (Bob) claims it by revealing the preimage, and Alice refunds via the CLTV
 //! branch if Bob never claims.
 //!
-//!   OP_IF  OP_SHA256 <H> OP_EQUALVERIFY <claimPub> OP_CHECKSIG
+//!   OP_IF  OP_SIZE <32> OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <claimPub> OP_CHECKSIG
 //!   OP_ELSE  <locktime> OP_CLTV OP_DROP <refundPub> OP_CHECKSIG
 //!   OP_ENDIF                                            (paid to a bare P2SH)
 //!

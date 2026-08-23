@@ -43,6 +43,20 @@ impl WalletTx {
         self.inner.fee
     }
 
+    /// SEQUENTIA: whether this is a COINBASE, which is where every staking
+    /// reward except a pool's pot claim arrives.
+    ///
+    /// A light wallet cannot tell otherwise: `inputs()` reports only the inputs
+    /// the wallet owns, and a coinbase's single input belongs to nobody, so it
+    /// looks exactly like an ordinary payment from a stranger. Attribution
+    /// turns on this bit (see `lwk_wollet::staking_rewards`), and getting it
+    /// wrong is expensive in both directions - miss it and a staker's rewards
+    /// are invisible, invent it and ordinary receives get sold.
+    #[wasm_bindgen(js_name = isCoinbase)]
+    pub fn is_coinbase(&self) -> bool {
+        self.inner.tx.is_coinbase()
+    }
+
     /// Return the type of the transaction. Can be "issuance", "reissuance", "burn", "redeposit", "incoming", "outgoing" or "unknown".
     #[wasm_bindgen(js_name = txType)]
     pub fn tx_type(&self) -> String {

@@ -49,6 +49,9 @@ mod seqob_covenant;
 // SEQUENTIA staking pools: join, move between, and (the half a descriptor wallet
 // cannot do alone) leave one.
 mod sequentia_delegation;
+// SEQUENTIA staking rewards: which coins a staker was PAID, and which of them
+// to convert. Shared by every light wallet so the two decisions cannot drift.
+mod staking_rewards;
 mod seqdex_swap;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod serial;
@@ -150,6 +153,9 @@ pub use seqob_covenant::{build_covenant_fill_tx_js, script_to_address};
 pub use sequentia_delegation::{
     build_delegation_spend_tx_js, find_delegation_records_js, parse_delegation_script_js,
     sequentia_delegation_script_js,
+};
+pub use staking_rewards::{
+    attribute_staking_rewards_js, decide_reward_conversion_js, plan_reward_batches_js,
 };
 pub use seqdex_swap::SwapRequest;
 pub use signer::Signer;

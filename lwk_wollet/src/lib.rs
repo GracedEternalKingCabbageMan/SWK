@@ -124,6 +124,10 @@ mod seqob_covenant;
 // wallet cannot do on its own) spend one to re-point or leave a pool.
 #[cfg(feature = "sequentia")]
 pub mod sequentia_delegation;
+// SEQUENTIA staking rewards: which coins a staker was PAID, and which of them to
+// convert. Pure; the light wallets share this rather than each inventing one.
+#[cfg(feature = "sequentia")]
+pub mod staking_rewards;
 // SEQUENTIA coinjoin: sign the coordinator's round transaction for our own inputs.
 #[cfg(feature = "sequentia")]
 mod coinjoin;
@@ -176,6 +180,11 @@ pub use crate::tx_builder::{BuiltTx, TxBuilder, WolletTxBuilder};
 pub use crate::sequentia_delegation::{
     build_delegation_spend_tx, parse_delegation_script, sequentia_delegation_script,
     DelegationSpendPlan,
+};
+#[cfg(feature = "sequentia")]
+pub use crate::staking_rewards::{
+    attribute_rewards, batches, decide, AutoConvertSettings, ConvertTarget, Decision, OwnedOutput,
+    Quote, RewardBatch, RewardSource, SignerRelation, StakingReward, StakingScripts, TxFacts,
 };
 #[cfg(feature = "sequentia")]
 pub use crate::tx_builder::sequentia_stake_script;

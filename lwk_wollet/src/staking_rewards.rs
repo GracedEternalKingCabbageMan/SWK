@@ -378,10 +378,14 @@ pub enum Decision {
     Disabled,
     /// The asset IS the target, or the staker excluded it.
     NotConverted,
-    /// No market for this pair, or none with depth to fill the batch. This is
-    /// the user's own "as long as there is a market for that trading pair",
-    /// and it is checked against the live book, not a static list of pairs.
+    /// No market for this pair at all. This is the user's own "as long as there
+    /// is a market for that trading pair", checked against the live book rather
+    /// than a static list of pairs.
     NoMarket,
+    /// A market EXISTS, but this batch is worth less than one atom of the
+    /// target. Saying "no market" here would send a staker looking for
+    /// liquidity that is already there, so the two are kept apart.
+    TooSmallToPrice,
     /// The proceeds would not clear the floor. Wait for more rewards.
     BelowFloor {
         /// What the batch would fetch.
@@ -463,7 +467,13 @@ pub fn decide(
         Some(q) => q,
     };
     if quote.receives == 0 {
-        return Decision::NoMarket;
+        // The reference price is what tells an empty book from a batch too
+        // small to price: it is only set when there were offers.
+        return if quote.reference > 0 {
+            Decision::TooSmallToPrice
+        } else {
+            Decision::NoMarket
+        };
     }
     // Slippage before the floor: a batch quoted 40% away should say so, rather
     // than blame a floor it only misses because the price is wrong.
@@ -791,12 +801,21 @@ mod tests {
             value: 100,
         };
         assert_eq!(decide(&batch, None, &s), Decision::NoMarket);
-        // A market with no depth to deliver anything is the same situation.
+        // A book with nothing in it at all says the same.
         let empty = Quote {
+            receives: 0,
+            reference: 0,
+        };
+        assert_eq!(decide(&batch, Some(empty), &s), Decision::NoMarket);
+
+        // But a market that EXISTS and a batch too small to price are different
+        // situations, and reporting the second as the first sends a staker
+        // hunting for liquidity that is already resting on the book.
+        let dust = Quote {
             receives: 0,
             reference: 20_000,
         };
-        assert_eq!(decide(&batch, Some(empty), &s), Decision::NoMarket);
+        assert_eq!(decide(&batch, Some(dust), &s), Decision::TooSmallToPrice);
     }
 
     #[test]

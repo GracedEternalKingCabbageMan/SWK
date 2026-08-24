@@ -15,7 +15,7 @@
 > [SEQUENTIA.md](../SEQUENTIA.md). This fork is NOT published to npm (the
 > `lwk_wasm` npm package is upstream LWK): build `pkg/` yourself with
 > `wasm-pack build --target web --release` (needs clang). The main consumer is
-> [sequentia-web-wallet](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
+> [sequentia-web-wallet](https://github.com/ConcatenaLabs/sequentia-web-wallet),
 > live at https://sequentiatestnet.com/wallet/; the demo formerly in
 > `lwk_wasm/www/` moved to that repository.
 >

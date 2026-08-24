@@ -156,6 +156,7 @@ pub use sequentia_delegation::{
 };
 pub use staking_rewards::{
     attribute_staking_rewards_js, decide_reward_conversion_js, plan_reward_batches_js,
+    sequentia_coinbase_maturity_js,
 };
 pub use seqdex_swap::SwapRequest;
 pub use signer::Signer;

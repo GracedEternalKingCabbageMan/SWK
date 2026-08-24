@@ -25,6 +25,7 @@ use lwk_wollet::elements::{AssetId, OutPoint, Script, Txid};
 use lwk_wollet::staking_rewards::{
     attribute_rewards, batches, decide, AutoConvertSettings, ConvertTarget, Decision, OwnedOutput,
     Quote, RewardBatch, SignerRelation, StakingReward, TxFacts,
+    SEQUENTIA_COINBASE_MATURITY,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -240,6 +241,16 @@ fn reward_from_dto(d: &StakingRewardDto) -> Result<StakingReward, Error> {
         blocks_to_maturity: d.blocks_to_maturity,
         spent: d.spent,
     })
+}
+
+/// Sequentia's coinbase maturity, in blocks -- 1,000, not Bitcoin's 100.
+///
+/// Exposed so no wallet has to hard-code it, and so none of them can hard-code
+/// it WRONG: a wallet using 100 calls a reward spendable 900 blocks early and
+/// then builds a transaction the chain rejects.
+#[wasm_bindgen(js_name = sequentiaCoinbaseMaturity)]
+pub fn sequentia_coinbase_maturity_js() -> u32 {
+    SEQUENTIA_COINBASE_MATURITY
 }
 
 /// Every staking reward in `txs`, newest first.

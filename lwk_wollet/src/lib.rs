@@ -185,6 +185,7 @@ pub use crate::sequentia_delegation::{
 pub use crate::staking_rewards::{
     attribute_rewards, batches, decide, AutoConvertSettings, ConvertTarget, Decision, OwnedOutput,
     Quote, RewardBatch, RewardSource, SignerRelation, StakingReward, StakingScripts, TxFacts,
+    SEQUENTIA_COINBASE_MATURITY,
 };
 #[cfg(feature = "sequentia")]
 pub use crate::tx_builder::sequentia_stake_script;

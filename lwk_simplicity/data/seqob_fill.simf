@@ -1,0 +1,70 @@
+/*
+ * SeqOB single-fill covenant offer (same-chain), design doc section 1.
+ *
+ * A maker locks N units of EXPLICIT asset A in this Taproot (0xbe) UTXO. The
+ * order IS the coin. Two spend branches, selected by `witness::PATH`:
+ *
+ *   FILL   (Left, permissionless, no maker signature): ANYONE may spend iff the
+ *          spending tx pays at least REQUIRED_B of EXPLICIT asset B to the
+ *          maker's committed script at output index 0.
+ *   REFUND (Right, maker signature + absolute CLTV): after EXPIRY the maker
+ *          reclaims asset A.
+ *
+ * Every order term (asset B id, required amount, maker payout script hash, maker
+ * key) is a compile-time `param::` constant baked into the tapleaf, so it is
+ * committed inside the Taproot output key: a taker can only satisfy the terms,
+ * never alter them. The SAME program governs every order; only the arguments
+ * differ.
+ *
+ * Explicit-only enforcement: `output_amount` returns asset and amount as the
+ * confidential sum type `Either<point, explicit>`. `unwrap_right` HARD-ABORTS if
+ * the taker tries to pay in a blinded output the covenant cannot read, so the
+ * FILL leaf can only be satisfied with a transparent payment to the maker.
+ *
+ * EXPIRY is a literal here (not a param) only to sidestep the Height param-type
+ * question for this first experiment; in production it is a per-order param.
+ */
+
+// Read output `index` as an EXPLICIT (asset_id, amount) pair.
+// unwrap()      aborts if the output does not exist.
+// unwrap_right  aborts if the asset or amount is blinded (Left = confidential point).
+fn get_output_explicit_asset_amount(index: u32) -> (u256, u64) {
+    let pair: (Asset1, Amount1) = unwrap(jet::output_amount(index));
+    let (asset, amount): (Asset1, Amount1) = pair;
+    let asset_bits: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset_bits, amount)
+}
+
+fn ensure_zero_bit(bit: bool) { assert!(jet::eq_1(<bool>::into(bit), 0)); }
+
+// FILL: the taker must pay >= REQUIRED_B of explicit ASSET_B to the maker's
+// committed script (MAKER_SPK_HASH) at output 0.
+fn fill_spend() {
+    let credit_idx: u32 = 0;
+
+    let (asset, amount): (u256, u64) = get_output_explicit_asset_amount(credit_idx);
+    assert!(jet::eq_256(asset, param::ASSET_B));
+
+    // amount >= REQUIRED_B  <=>  subtract_64(amount, REQUIRED_B) does not borrow.
+    // (Same underflow-guard pattern as options.simf; avoids depending on le_64.)
+    let (borrow, _): (bool, u64) = jet::subtract_64(amount, param::REQUIRED_B);
+    ensure_zero_bit(borrow);
+
+    let spk_hash: u256 = unwrap(jet::output_script_hash(credit_idx));
+    assert!(jet::eq_256(spk_hash, param::MAKER_SPK_HASH));
+}
+
+// REFUND: after EXPIRY, the maker reclaims with a signature over the whole tx.
+fn refund_spend(maker_sig: Signature) {
+    let expiry: Height = 1000;
+    jet::check_lock_height(expiry);
+    jet::bip_0340_verify((param::MAKER_PUBKEY, jet::sig_all_hash()), maker_sig);
+}
+
+fn main() {
+    match witness::PATH {
+        Left(fill: ()) => fill_spend(),
+        Right(maker_sig: Signature) => refund_spend(maker_sig),
+    }
+}

@@ -1,0 +1,78 @@
+/*
+ * SeqOB cross-chain Sequentia-leg covenant, design doc section 3.
+ *
+ * The Sequentia (asset) leg of a BTC <-> asset swap becomes a funded 0xbe UTXO,
+ * mirroring today's SEQ HTLC P2SH but funded and unilaterally claimable:
+ *
+ *   CLAIM  (Left): anyone who reveals the preimage `p` with sha256(p) == HASHLOCK
+ *          may spend, iff the tx pays >= AMOUNT_A of EXPLICIT asset A to the
+ *          claimant's committed script at output 0. Revealing `p` on the
+ *          Sequentia chain is what lets the counterparty claim the Bitcoin leg.
+ *   REFUND (Right): after T_SEQ the funder reclaims with a signature.
+ *
+ * Single-fill, all-or-nothing: no recursion, no state carry. The secret holder
+ * is whoever claims the SEQ leg (the taker in forward BTC->asset, the maker in
+ * reverse asset->BTC); their claim reveals `p`.
+ *
+ * CRITICAL SAFETY NOTE (design doc section 3): this covenant CANNOT introspect
+ * anchoring. Anchor height, anchorstatus, and quorum certification are NOT fields
+ * of the spending transaction, so there is deliberately NO anchor jet here and
+ * the covenant does NOT (cannot) enforce VerifySeqLegSafe. The covenant funds and
+ * de-interactivizes the SEQ leg only; the Bitcoin-leg claimant's WATCHER must
+ * still re-run VerifySeqLegSafe (anchor at/above the counter-leg height,
+ * anchorstatus ok, quorum certified) on the reveal block BEFORE claiming the
+ * Bitcoin leg, and handle a reveal block that is later orphaned. Only the Bitcoin
+ * leg stays interactive, because Bitcoin has no Simplicity.
+ *
+ * Explicit-only: unwrap_right hard-aborts on a blinded payment output.
+ * T_SEQ is a literal only for the experiment; in production it is a param.
+ */
+
+// Explicit (asset, amount) of output `index`; aborts if missing or blinded.
+fn out_explicit(index: u32) -> (u256, u64) {
+    let (asset, amount): (Asset1, Amount1) = unwrap(jet::output_amount(index));
+    let asset_bits: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount_val: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset_bits, amount_val)
+}
+
+fn ensure_zero_bit(bit: bool) { assert!(jet::eq_1(<bool>::into(bit), 0)); }
+
+// Assert a >= b via the subtract-64 borrow guard.
+fn ensure_ge_64(a: u64, b: u64) {
+    let (borrow, _): (bool, u64) = jet::subtract_64(a, b);
+    ensure_zero_bit(borrow);
+}
+
+// sha256 of a 32-byte preimage (same shape as htlc.simf).
+fn sha2(preimage: u256) -> u256 {
+    let hasher: Ctx8 = jet::sha_256_ctx_8_init();
+    let hasher: Ctx8 = jet::sha_256_ctx_8_add_32(hasher, preimage);
+    jet::sha_256_ctx_8_finalize(hasher)
+}
+
+// CLAIM: reveal `p`, and pay >= AMOUNT_A of explicit ASSET_A to the claimant's
+// committed script at output 0.
+fn claim_spend(preimage: u256) {
+    assert!(jet::eq_256(sha2(preimage), param::HASHLOCK));
+
+    let credit_idx: u32 = 0;
+    let (asset, amount): (u256, u64) = out_explicit(credit_idx);
+    assert!(jet::eq_256(asset, param::ASSET_A));
+    ensure_ge_64(amount, param::AMOUNT_A);
+    assert!(jet::eq_256(unwrap(jet::output_script_hash(credit_idx)), param::CLAIMANT_SPK_HASH));
+}
+
+// REFUND: after T_SEQ, the funder reclaims with a signature over the whole tx.
+fn refund_spend(funder_sig: Signature) {
+    let t_seq: Height = 2000;
+    jet::check_lock_height(t_seq);
+    jet::bip_0340_verify((param::FUNDER_PUBKEY, jet::sig_all_hash()), funder_sig);
+}
+
+fn main() {
+    match witness::PATH {
+        Left(preimage: u256) => claim_spend(preimage),
+        Right(funder_sig: Signature) => refund_spend(funder_sig),
+    }
+}

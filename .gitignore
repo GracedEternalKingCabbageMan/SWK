@@ -28,3 +28,6 @@ rust-elements/Cargo.lock
 
 # wasm-pack build output
 lwk_wasm/pkg/
+
+# wasm-pack build output, reached through a symlink from www/.
+lwk_wasm/www/

@@ -1,0 +1,126 @@
+/*
+ * SeqOB partial-fill covenant offer (same-chain), design doc section 2.
+ *
+ * A maker locks N units of EXPLICIT asset A. A taker fills `filled` units
+ * (MIN_LOT <= filled <= N) in one transaction iff:
+ *   (a) it pays the maker ceil(filled * RATE_NUM / RATE_DEN) of EXPLICIT asset B
+ *       (ceil rounds in the maker's favour), AND
+ *   (b) it returns the remainder (N - filled) of asset A to a fresh output whose
+ *       scriptPubKey EQUALS this covenant input's own scriptPubKey.
+ *
+ * The self-replication in (b) re-commits the ENTIRE parameter set for free (the
+ * output key contains the tapleaf, which contains every param::), so the SAME
+ * program governs every remainder at every size. The order's mutable size lives
+ * in the UTXO VALUE, not the program: no u256 state carry is needed.
+ *
+ * OUTPUT-ALIASING DEFENCE (design doc section 2, the sharp edge): a fixed
+ * input-bound output map. The covenant input at consensus index k MUST credit
+ * its maker payment at output 2k and its remainder at output 2k+1. Two covenant
+ * inputs therefore reference disjoint outputs, so one maker payment can never
+ * settle two orders.
+ *
+ * Explicit-only: unwrap_right hard-aborts on any blinded input or output.
+ * EXPIRY is a literal only for the experiment; in production it is a param.
+ */
+
+// Explicit (asset, amount) of output `index`; aborts if missing or blinded.
+fn out_explicit(index: u32) -> (u256, u64) {
+    let (asset, amount): (Asset1, Amount1) = unwrap(jet::output_amount(index));
+    let asset_bits: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount_val: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset_bits, amount_val)
+}
+
+// Explicit (asset, amount) of input `index`; aborts if missing or blinded.
+fn in_explicit(index: u32) -> (u256, u64) {
+    let (asset, amount): (Asset1, Amount1) = unwrap(jet::input_amount(index));
+    let asset_bits: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount_val: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset_bits, amount_val)
+}
+
+fn ensure_zero_bit(bit: bool) { assert!(jet::eq_1(<bool>::into(bit), 0)); }
+
+// Assert a >= b via the subtract-64 borrow guard (no dependency on le_64).
+fn ensure_ge_64(a: u64, b: u64) {
+    let (borrow, _): (bool, u64) = jet::subtract_64(a, b);
+    ensure_zero_bit(borrow);
+}
+
+fn double_u32(k: u32) -> u32 {
+    let (carry, d): (bool, u32) = jet::add_32(k, k);
+    ensure_zero_bit(carry);
+    d
+}
+
+fn inc_u32(k: u32) -> u32 {
+    let (carry, r): (bool, u32) = jet::add_32(k, 1);
+    ensure_zero_bit(carry);
+    r
+}
+
+// required_B = ceil(filled * RATE_NUM / RATE_DEN), overflow-guarded.
+// The product must fit in u64 (design doc section 2 open arithmetic point:
+// bound RATE_NUM * max_size < 2^64; larger orders would need the u256 jets).
+fn required_payment(filled: u64) -> u64 {
+    // multiply_64 returns a single u128 word (TWO^128); split it into the
+    // high/low u64 limbs via a bit-preserving structural cast (u128 == u64 x u64,
+    // most-significant limb first). The overflow guard is unchanged: hi == 0.
+    let (hi, lo): (u64, u64) = <u128>::into(jet::multiply_64(filled, param::RATE_NUM));
+    assert!(jet::eq_64(hi, 0));
+    let (q, r): (u64, u64) = jet::div_mod_64(lo, param::RATE_DEN);
+    match jet::eq_64(r, 0) {
+        true => q,
+        false => {
+            let (carry, up): (bool, u64) = jet::add_64(q, 1);
+            ensure_zero_bit(carry);
+            up
+        },
+    }
+}
+
+fn fill_spend() {
+    let k: u32 = jet::current_index();
+    let pay_idx: u32 = double_u32(k);
+    let rem_idx: u32 = inc_u32(pay_idx);
+
+    // This covenant input holds asset A.
+    let (in_asset, in_amount): (u256, u64) = in_explicit(k);
+    assert!(jet::eq_256(in_asset, param::ASSET_A));
+
+    // (b) Remainder returns asset A to the SAME covenant script (self-replication).
+    let (rem_asset, rem_amount): (u256, u64) = out_explicit(rem_idx);
+    assert!(jet::eq_256(rem_asset, param::ASSET_A));
+    assert!(jet::eq_256(unwrap(jet::output_script_hash(rem_idx)), jet::current_script_hash()));
+
+    // Conservation: filled = in_amount - rem_amount (no borrow => rem <= in).
+    let (borrow, filled): (bool, u64) = jet::subtract_64(in_amount, rem_amount);
+    ensure_zero_bit(borrow);
+
+    // Dust floors: fill at least MIN_LOT; remainder is zero or at least MIN_LOT.
+    ensure_ge_64(filled, param::MIN_LOT);
+    match jet::eq_64(rem_amount, 0) {
+        true => {},
+        false => ensure_ge_64(rem_amount, param::MIN_LOT),
+    };
+
+    // (a) Pro-rata payment to the maker at the input-bound pay index.
+    let required_b: u64 = required_payment(filled);
+    let (pay_asset, pay_amount): (u256, u64) = out_explicit(pay_idx);
+    assert!(jet::eq_256(pay_asset, param::ASSET_B));
+    assert!(jet::eq_256(unwrap(jet::output_script_hash(pay_idx)), param::MAKER_SPK_HASH));
+    ensure_ge_64(pay_amount, required_b);
+}
+
+fn refund_spend(maker_sig: Signature) {
+    let expiry: Height = 1000;
+    jet::check_lock_height(expiry);
+    jet::bip_0340_verify((param::MAKER_PUBKEY, jet::sig_all_hash()), maker_sig);
+}
+
+fn main() {
+    match witness::PATH {
+        Left(fill: ()) => fill_spend(),
+        Right(maker_sig: Signature) => refund_spend(maker_sig),
+    }
+}

@@ -33,6 +33,22 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use elements::{AssetId, OutPoint, Script};
 
+/// Sequentia's coinbase maturity, in blocks.
+///
+/// NOT Bitcoin's 100. COINBASE_MATURITY is a number of BLOCKS, so what it
+/// protects drifts with the cadence: 100 blocks at Bitcoin's 600 seconds is
+/// 16h40m, while the same 100 on a 60-second chain is 100 minutes -- a tenth of
+/// the protection. Sequentia holds the WALL-CLOCK figure equal to Bitcoin's
+/// instead of the block count, which at 60s means 1,000 blocks. It matters more
+/// here than on Bitcoin, because Sequentia has no block subsidy and the coinbase
+/// carries the producer's fee income rather than new issuance.
+///
+/// A wallet that used 100 here would call a reward spendable 900 blocks early
+/// and then build a transaction the chain rejects. That is exactly what every
+/// light wallet did until a node running against the live testnet reported 941
+/// blocks to maturity on a reward with 60 confirmations.
+pub const SEQUENTIA_COINBASE_MATURITY: u32 = 1000;
+
 /// Which of the four ways a staker gets paid produced this coin.
 ///
 /// Informational only: nothing in policy or execution branches on it. A staker
@@ -230,12 +246,18 @@ pub fn attribute_rewards(
 
 /// Blocks left before a coinbase confirmed at `height` is spendable. An
 /// unconfirmed coinbase is the whole wait, not zero.
+///
+/// `maturity + 1 - depth`, matching the node exactly (`GetTxBlocksToMaturity`):
+/// a coinbase becomes spendable when its depth EXCEEDS the maturity, not when
+/// it equals it. One block out here is a wallet that offers a reward for
+/// conversion one block before the chain will accept the spend, so it is worth
+/// the +1 being deliberate rather than inherited.
 fn blocks_to_maturity(height: Option<u32>, tip_height: u32, coinbase_maturity: u32) -> u32 {
     match height {
-        None => coinbase_maturity,
+        None => coinbase_maturity.saturating_add(1),
         Some(h) => {
             let depth = tip_height.saturating_sub(h).saturating_add(1);
-            coinbase_maturity.saturating_sub(depth)
+            coinbase_maturity.saturating_add(1).saturating_sub(depth)
         }
     }
 }
@@ -522,6 +544,30 @@ mod tests {
     }
 
     #[test]
+    fn the_coinbase_maturity_is_sequentias_not_bitcoins() {
+        // 1,000 blocks, because the chain runs at 60 seconds and the protection
+        // is a wall-clock one. A wallet that used 100 would call a reward
+        // spendable 900 blocks early and then build a transaction the chain
+        // rejects -- which is what every light wallet did until a node on the
+        // live testnet reported 941 blocks to maturity at 60 confirmations.
+        assert_eq!(SEQUENTIA_COINBASE_MATURITY, 1000);
+
+        let txs = vec![TxFacts {
+            txid: txid(1),
+            height: Some(1000),
+            is_coinbase: true,
+            from_me: false,
+            owned_outputs: vec![owned(0, staking_script(), asset(9), 500)],
+        }];
+        // 60 deep: still 941 to go, exactly as the node reports.
+        let r = attribute_rewards(&txs, &scripts(), &no_relations(), 1059,
+                                  SEQUENTIA_COINBASE_MATURITY);
+        assert_eq!(r[0].blocks_to_maturity, 941);
+        assert!(!r[0].mature());
+        assert!(!r[0].convertible());
+    }
+
+    #[test]
     fn coinbase_to_our_staking_key_is_solo() {
         let txs = vec![TxFacts {
             txid: txid(1),
@@ -534,8 +580,9 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].source, RewardSource::Solo);
         assert_eq!(r[0].value, 500);
-        // Freshly mined: the whole maturity still to wait, less the block itself.
-        assert_eq!(r[0].blocks_to_maturity, 99);
+        // Freshly mined, one deep: the full maturity still to wait, because a
+        // coinbase is spendable only once its depth EXCEEDS the maturity.
+        assert_eq!(r[0].blocks_to_maturity, 100);
         assert!(!r[0].mature());
         assert!(!r[0].convertible());
     }

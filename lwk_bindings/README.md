@@ -6,7 +6,7 @@
 > wallet behavior, or the Bitcoin parent-chain (`btc`) module yet, and it builds
 > `lwk_wollet` with default features (no `sequentia`). Native consumers that
 > need Sequentia support depend on the Rust crates directly instead, the way
-> [Ambra](https://github.com/GracedEternalKingCabbageMan/ambra)'s `ambra_core`
+> [Ambra](https://github.com/ConcatenaLabs/ambra)'s `ambra_core`
 > uses `lwk_wollet` with features `sequentia`, `esplora`, `btc-blocking`.
 > See [SEQUENTIA.md](../SEQUENTIA.md).
 

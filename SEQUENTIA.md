@@ -9,7 +9,7 @@ the same reason.
 
 Everything targets the public Sequentia testnet (parent chain: Bitcoin
 testnet4). Protocol background lives in the node repo,
-https://github.com/GracedEternalKingCabbageMan/Sequentia, under `doc/sequentia/`.
+https://github.com/ConcatenaLabs/Sequentia, under `doc/sequentia/`.
 
 Crates NOT touched by the fork (still pure upstream): `lwk_signer`, `lwk_cli`,
 `lwk_jade`, `lwk_ledger`, `lwk_hwi`, `lwk_boltz`, `lwk_payment_instructions`,
@@ -228,7 +228,7 @@ The fork is not published to npm; consumers build `pkg/` with `wasm-pack`.
 
 The browser-wallet demo that used to live in `lwk_wasm/www/` was extracted to
 its own repository,
-[sequentia-web-wallet](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
+[sequentia-web-wallet](https://github.com/ConcatenaLabs/sequentia-web-wallet),
 live at https://sequentiatestnet.com/wallet/.
 
 ## Design invariants the fork keeps

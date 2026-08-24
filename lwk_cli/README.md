@@ -9,7 +9,7 @@
 Building the needed executable requires [rust](https://www.rust-lang.org/tools/install):
 
 ```sh
-$ git clone https://github.com/GracedEternalKingCabbageMan/SWK.git
+$ git clone https://github.com/ConcatenaLabs/SWK.git
 $ cd SWK
 $ cargo install --path ./lwk_cli
 ```

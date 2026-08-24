@@ -12,7 +12,7 @@ with `thiserror`, no `unwrap` outside tests, import grouping, naming, commit-mes
 Sequentia; this file covers that gap rather than repeating it.
 
 Node and consensus conventions live in the
-[`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) repo.
+[`Sequentia`](https://github.com/ConcatenaLabs/Sequentia) repo.
 
 ## Branch
 
@@ -47,7 +47,7 @@ wasm-pack build --target web --release      # needs clang for the secp256k1 buil
 
 `--target web` is not optional. The output lands in `lwk_wasm/pkg/` (gitignored, never committed)
 and is consumed by
-[`sequentia-web-wallet`](https://github.com/GracedEternalKingCabbageMan/sequentia-web-wallet),
+[`sequentia-web-wallet`](https://github.com/ConcatenaLabs/sequentia-web-wallet),
 whose `index.html` imports a **default-exported `init`** from `./pkg/lwk_wasm.js` — a shape only
 the `web` target produces. The wallet symlinks or copies `lwk_wasm/pkg` into its own `pkg/`.
 

@@ -96,7 +96,7 @@ In code (`lwk_wollet/src/btc/`, cargo features `btc`, `btc-async`,
 | [`seqdex`](https://github.com/ConcatenaLabs/seqdex) | SeqDEX: non-custodial atomic-swap DEX: P2P order book (seqob), same-chain swaps, and cross-chain BTC↔asset swaps made safe by Bitcoin anchoring. |
 | [`sequentia-electrs`](https://github.com/ConcatenaLabs/sequentia-electrs) | The electrs fork: Rust indexer + Esplora REST API for Sequentia and its Bitcoin testnet4 parent chain. |
 
-Known consumers of SWK today:
+Consumers of SWK:
 
 - **sequentia-web-wallet** (live at https://sequentiatestnet.com/wallet/) uses the
   `lwk_wasm` bindings compiled to WebAssembly, all client-side.
@@ -197,8 +197,8 @@ cargo test -p lwk_wollet --lib --features sequentia seqdex             # SeqDEX 
 Notes:
 
 - Unit tests run without any node or network access.
-- Known issue: a plain `cargo test -p lwk_wollet --lib` currently has a number
-  of failing upstream fixture tests. The workspace enables the vendored `elements`
+- Known issue: a plain `cargo test -p lwk_wollet --lib` reports a number of
+  failing upstream fixture tests. The workspace enables the vendored `elements`
   crate's `sequentia` feature globally, which changes the transaction and
   header wire format, so upstream Liquid test vectors no longer deserialize.
   The Sequentia-specific test modules (`btc`, `seqdex_htlc`, `seqdex_swap`) all

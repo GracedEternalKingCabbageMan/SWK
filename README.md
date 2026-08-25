@@ -4,7 +4,7 @@ SWK is the toolkit for building **Sequentia** wallets: a Rust wallet library wit
 WASM bindings, a CLI, and multi-language (UniFFI) bindings, forked from
 [Blockstream LWK](https://github.com/Blockstream/lwk) (Liquid Wallet Kit, fork
 point v0.18.1). Sequentia is a Bitcoin sidechain for asset tokenization and
-decentralized exchange, built as a fork of Blockstream Elements; the protocol
+disintermediated exchanges, built as a fork of Blockstream Elements; the protocol
 documentation lives in the node repository,
 [Sequentia](https://github.com/ConcatenaLabs/Sequentia), under
 `doc/sequentia/`.
